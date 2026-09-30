@@ -1,7 +1,9 @@
 """账号池 —— 多账号轮换 / 额度计数 / 冷却 / **凭据缓存（token+jar 成对）** / 状态可持久化。
 
 设计要点（沿既有项目的教训，2026-09-30 随上游改版订正）：
-  · **登录走轮换出口、出图/出片走正常出口**（token 是无状态 JWT）⇒ signin 与使用分离；
+  · 🔴 signin/refresh **直连**（2026-10-01 订正：auth 域对池代理出口回 502；其 IP 级
+    频率墙 ≈12 次/6 分钟，服务频率 ≈ 每账号 30 天一次 + 45s 跨账号节流，够不着）——
+    旧域"signin 必须走轮换出口"的纪律随旧域滑块墙一起作废；
   · 🔴 **凭据 = (token, jar) 二元组**（pair 门）：jar 是**产出这份 token 的那次会话**
     种下的 cookie 全集（WAF 冷启动章 + refresh_token + token），写请求必须整套装出去
     —— token 配别人的 jar ⇒ x5sec（2026-09-22 实测）；
@@ -254,12 +256,9 @@ class AccountPool:
                 raise MintError(f"token_url 未返回 token（{url.split('?')[0]}）")
             # 服务只给 token、给不出那次登录的 jar ⇒ 保留既有 jar（有则并入新 token）
             return token
-        # ③ auth 域 signin（轮换出口；IP 级频率墙由 _pace_signin 节流）
-        if not s.signin_proxy:
-            raise CredentialUnavailableError(
-                "未配置 QWEN_SIGNIN_PROXY / QWEN_TOKEN_URL，且账号 jar 里没有 "
-                "refresh_token —— 无法铸造 token")
-        token, jar = mint_token(s.signin_proxy, account.email, account.password,
+        # ③ auth 域 signin（🔴 直连：池代理出口打 auth 域回 502，2026-10-01 实测；
+        #    IP 级频率墙由 _pace_signin 节流，服务频率 ≈ 每账号 30 天一次，够不着）
+        token, jar = mint_token(account.email, account.password,
                                 base_url=s.base_url, auth_base=s.auth_base,
                                 user_agent=s.user_agent)
         account.jar = jar

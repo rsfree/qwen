@@ -23,12 +23,10 @@
     而账号本身登录毫无问题。所以本模块返回的是 `(token, jar)` 二元组，jar 与
     token 同源同缓存；
   · signin 有 **IP 级频率墙**（实测 ≈12 次/6 分钟触发；挑战页 200 + text/html，
-    持续数分钟，只有换出口才恢复）⇒ 必须走轮换出口，且调用方要节流（账号池的
-    `_pace_signin` 负责，不在本模块）。
-
-为什么是 HTTP 代理（池实测语义）：**每连接换出口 IP + 同连接复用同 IP** ⇒ 每次
-铸造换一个 IP、一次铸造内"预热 + signin"全程同一 IP（自洽）。🔴 别把铸造改成
-常驻 client —— 多次登录共用出口正好撞 IP 墙。refresh 不经代理（直连，无墙）。
+    持续数分钟，只有换出口才恢复）⇒ 调用方要节流（账号池的 `_pace_signin` 负责，
+    不在本模块）。服务的 signin 频率 ≈ 每账号 30 天一次，远够不着墙 ⇒ **直连**。
+    🔴 代理池出口打 auth 域回 502（2026-10-01 实测；主机名不入库）⇒ signin/refresh 一律直连，
+    `QWEN_SIGNIN_PROXY` 不再参与铸造。
 
 ⚠️ httpx 的 `proxy=` 是 mounts，会覆盖自定义 `transport` —— 测试注入 MockTransport
 时必须跳过 proxy（`transport` 参数仅测试用，给了就不走代理）。
@@ -226,39 +224,36 @@ def _warm_headers(user_agent: str) -> dict[str, str]:
 # ------------------------------------------------------------------ 铸造 / 续期
 
 
-def mint_token(proxy_url: str, email: str, password: str, *,
+def mint_token(email: str, password: str, *,
                base_url: str = "https://chat.qwen.ai",
                auth_base: str = AUTH_BASE_DEFAULT,
                user_agent: str = "",
                timeout: float = 40.0,
                transport: httpx.BaseTransport | None = None) -> tuple[str, str]:
-    """经**轮换出口**登录一个账号，返回 `(token, jar)`。
+    """登录一个账号，返回 `(token, jar)`。**直连**（不经代理）。
+
+    🔴 2026-10-01 实测订正：auth 域对**池代理出口回 502**（CONNECT 打 auth 域直接
+    CONNECT 打 auth.qwen.ai 直接 Bad Gateway），而**直连** signin/refresh 一路绿灯
+    （auth 域不拦滑块；IP 级频率墙 ≈12 次/6 分钟，服务的 signin 频率 ≈ 每账号
+    30 天一次 + 45s 跨账号节流，远够不着）。旧域"signin 必须走轮换出口"的纪律
+    随旧域一起作废；`QWEN_SIGNIN_PROXY` 降级为应急覆盖（当前铸造路径不使用）。
 
     流程：`GET {chat 源}/auth` 预热（best-effort，收集 WAF 冷启动 cookie）→
     `POST {auth 源}/v2/auths/signin`。token 先读响应体（新契约），回落
     Set-Cookie（旧契约）；jar = 预热 + signin 种下的 cookie 全集，`token=`
     已写入（pair 门：token 与 jar 必须同源）。
 
-    🔴 每次调用新建一个 client = 新连接 = 新出口 IP；同 client 内"预热 + 登录"
-    靠连接复用保证全程同一出口。失败分类：挑战页 ⇒ `WallError`；其余（非 200 /
-    拿不到 token / 传输失败 / 非 http(s) 代理）⇒ `MintError`。
+    失败分类：挑战页 ⇒ `WallError`；其余（非 200 / 拿不到 token / 传输失败）⇒
+    `MintError`。
     """
-    raw_url = proxy_url if "://" in proxy_url else f"http://{proxy_url}"
-    scheme = urllib.parse.urlsplit(raw_url).scheme.lower()
-    if scheme not in ("http", "https"):
-        raise MintError(
-            f"signin 出口只收 http(s):// 代理，收到 {scheme!r}（SOCKS 分支已移除）")
-
     digest = hashlib.sha256(password.encode()).hexdigest()
     ua = user_agent or UA_DEFAULT
     auth_origin = urllib.parse.urlsplit(auth_base)
     auth_root = f"{auth_origin.scheme}://{auth_origin.netloc}"
 
     kwargs: dict = {"timeout": timeout, "trust_env": False}
-    if transport is not None:      # 测试注入：不走代理（proxy= 会覆盖 transport）
+    if transport is not None:      # 测试注入：显式 transport
         kwargs["transport"] = transport
-    else:
-        kwargs["proxy"] = raw_url
 
     warm_cookies: list[str] = []
     with httpx.Client(**kwargs) as client:

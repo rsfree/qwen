@@ -7,8 +7,8 @@
      是旧契约兜底；jar（pair 门）= 预热 + signin 种下的 cookie 全集 + token；
   ③ **refresh**（续期主路）：cookie 驱动 GET、返回新 token 并更新 jar（RT 有则覆盖）、
      无 RT 是 no-op、失败 best-effort 回 `("", jar)`；
-  ④ 失败分类：WAF 挑战页 → `WallError`；非 200 / 拿不到 token → `MintError`；
-     SOCKS 等非 HTTP 形态 → `MintError`（按用户决策**不做兼容**）。
+  ④ 失败分类：WAF 挑战页 → `WallError`；非 200 / 拿不到 token → `MintError`。
+     🔴 生产路径**直连**（auth 域对池代理出口回 502，2026-10-01 实测）。
 """
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ def test_signin_posts_to_auth_domain_and_reads_body_access_token():
             headers={"set-cookie": "refresh_token=RT-COOKIE; Path=/; HttpOnly; "
                                    "Domain=.qwen.ai"})
 
-    token, jar = mint_token("http://user:pw@pool.local:2086", "a@x.cn", "s3cret",
+    token, jar = mint_token("a@x.cn", "s3cret",
                             transport=_transport(handler))
 
     assert token == "JWT-abc.def.ghi"
@@ -85,7 +85,7 @@ def test_set_cookie_token_is_the_legacy_fallback():
         return httpx.Response(200, json={"success": True, "data": {"email": "x"}},
                               headers={"set-cookie": "token=LEGACY-jwt; Path=/"})
 
-    token, jar = mint_token("http://u:p@pool.local:2086", "a@x.cn", "pw",
+    token, jar = mint_token("a@x.cn", "pw",
                             transport=_transport(handler))
     assert token == "LEGACY-jwt"
     assert "token=LEGACY-jwt" in jar
@@ -102,7 +102,7 @@ def test_warmup_is_best_effort_and_does_not_block():
         return httpx.Response(200, json={"success": True,
                                          "data": {"access_token": "T2"}})
 
-    token, jar = mint_token("http://u:p@pool.local:2086", "a@x.cn", "pw",
+    token, jar = mint_token("a@x.cn", "pw",
                             transport=_transport(handler))
     assert token == "T2" and "token=T2" in jar
     assert hits == [WARM, SIGNIN]
@@ -113,25 +113,18 @@ def test_waf_challenge_page_is_wall_error():
         return httpx.Response(200, text="<html>aliyun_waf_xxx challenge</html>")
 
     with pytest.raises(WallError):
-        mint_token("http://u:p@pool.local:2086", "a@x.cn", "pw",
+        mint_token("a@x.cn", "pw",
                    transport=_transport(handler))
 
 
 def test_non_200_and_missing_token_are_mint_errors():
     with pytest.raises(MintError, match="HTTP 403"):
-        mint_token("http://u:p@pool.local:2086", "a@x.cn", "pw",
+        mint_token("a@x.cn", "pw",
                    transport=_transport(lambda r: httpx.Response(403, json={})))
 
     with pytest.raises(MintError, match="没有 token"):
-        mint_token("http://u:p@pool.local:2086", "a@x.cn", "pw",
+        mint_token("a@x.cn", "pw",
                    transport=_transport(lambda r: httpx.Response(200, json={"success": True})))
-
-
-def test_socks_form_is_rejected_with_clear_message():
-    """SOCKS 分支已删除（用户决策：不做兼容）⇒ 必须响亮失败，而不是静默改成直连。"""
-    with pytest.raises(MintError, match="http"):
-        mint_token("socks5h://u:p@pool.local:2088", "a@x.cn", "pw",
-                   transport=_transport(lambda r: httpx.Response(200, json={})))
 
 
 def test_proxy_transport_failure_is_mint_error():
@@ -139,15 +132,15 @@ def test_proxy_transport_failure_is_mint_error():
         raise httpx.ProxyError("proxy auth failed")
 
     with pytest.raises(MintError, match="传输失败"):
-        mint_token("http://u:p@pool.local:2086", "a@x.cn", "pw",
+        mint_token("a@x.cn", "pw",
                    transport=_transport(handler))
 
 
-def test_production_path_passes_proxy_and_never_env_proxy(monkeypatch):
-    """生产路径必须**显式带代理** + `trust_env=False`。
+def test_production_path_is_direct_and_never_env_proxy(monkeypatch):
+    """生产路径必须**直连**（auth 域对池代理出口回 502，2026-10-01 实测）+ `trust_env=False`。
 
-    为什么单独测它：注入 `transport` 时 httpx 会**跳过代理**（proxy 是 mounts，覆盖 transport），
-    所以"请求形状"那几条用例证明不了"真的走了代理" ⇒ 这里用 spy 断言构造 kwargs。
+    为什么单独测它：注入 `transport` 时走的是显式 transport 分支，证明不了
+    "默认分支真的直连" ⇒ 这里用 spy 断言构造 kwargs（无 proxy、trust_env=False）。
     """
     captured: dict = {}
     real_client = httpx.Client
@@ -158,9 +151,9 @@ def test_production_path_passes_proxy_and_never_env_proxy(monkeypatch):
             lambda r: httpx.Response(200, json={"data": {"access_token": "T"}})))
 
     monkeypatch.setattr(httpx, "Client", spy)
-    token, jar = mint_token("http://u:p@pool.live:2086", "a@x.cn", "pw")
+    token, jar = mint_token("a@x.cn", "pw")
     assert token == "T"
-    assert captured["proxy"] == "http://u:p@pool.live:2086", "必须走配置的轮换出口"
+    assert "proxy" not in captured, "auth 域 signin 必须直连（池代理出口 502）"
     assert captured["trust_env"] is False, "别让宿主的 HTTP(S)_PROXY 静默接管"
 
 
