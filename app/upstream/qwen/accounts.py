@@ -81,19 +81,26 @@ REFRESH_MARGIN_MIN = 60.0
 REFRESH_MARGIN_MAX = 6 * 3600.0
 
 
+def jwt_payload(token: str) -> dict | None:
+    """JWT 载荷（**不验签** —— 只用于调度续期/形状判定，不参与任何信任判定）。"""
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        doc = json.loads(base64.urlsafe_b64decode(payload))
+        return doc if isinstance(doc, dict) else None
+    except Exception:  # noqa: BLE001 - 任何异常都视为"这个 token 没有可解析的载荷"
+        return None
+
+
 def jwt_exp(token: str) -> float | None:
-    """从 JWT 载荷取 `exp`（**不验签** —— 只用于调度续期，不参与任何信任判定）。
+    """从 JWT 载荷取 `exp`。
 
     2026-09-30 起 access token `exp` = 签发 + **900 秒**（15 分钟）；载荷键
     `{exp, id, last_password_change, type:"access_token"}`（**没有 `iat`**）。
     """
-    try:
-        payload = token.split(".")[1]
-        payload += "=" * (-len(payload) % 4)
-        exp = json.loads(base64.urlsafe_b64decode(payload)).get("exp")
-        return float(exp) if exp else None
-    except Exception:  # noqa: BLE001 - 任何异常都视为"这个 token 没有可解析的 exp"
-        return None
+    payload = jwt_payload(token)
+    exp = (payload or {}).get("exp")
+    return float(exp) if exp else None
 
 
 #: `QWEN_TOKEN_TTL` 缺省/非法时的保守上限：**6 天**。🔴 2026-09-30 起会话 token 只有

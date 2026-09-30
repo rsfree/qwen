@@ -1,8 +1,10 @@
 """引擎级：经 FastAPI（ASGI）+ 假上游，断言「上游实际收到了什么」。零网络、零真实生成。"""
 from __future__ import annotations
 
+import base64
 import dataclasses
 import json
+import time
 
 from app.main import create_app
 from app.store import TaskStore
@@ -117,6 +119,46 @@ def test_get_with_invalid_key_is_still_401(client_app):
 def test_unknown_key_is_401(client_app):
     tc, *_ = client_app
     resp = tc.get(f"{TASKS_PATH}/cgt-x", headers={"Authorization": "Bearer sk-nope"})
+    assert resp.status_code == 401
+
+
+# ---------------------------------------------- 第三形态：JWT 门卡（2026-10-01）
+
+
+def _jwt(payload: dict) -> str:
+    """最小 JWT 形状（header.payload.signature；本服务只看载荷，不验签）。"""
+    b64 = lambda o: base64.urlsafe_b64encode(  # noqa: E731
+        json.dumps(o).encode()).rstrip(b"=").decode()
+    return (f"{b64({'alg': 'HS256', 'kid': 'legacy', 'typ': 'JWT'})}."
+            f"{b64(payload)}.sig")
+
+
+def test_live_jwt_door_card_is_accepted(client_app):
+    """③ JWT 门卡：调用方拿自己的 qwen access token 当 Key —— 活的 access_token 即认。"""
+    tc, fake, store, settings = client_app
+    now = time.time()
+    jwt = _jwt({"id": "u-1", "type": "access_token",
+                "exp": now + 600, "iat": now - 300})
+    resp = tc.post(TASKS_PATH, json=T2V_BODY, headers={"Authorization": f"Bearer {jwt}"})
+    assert resp.status_code == 200
+    assert resp.json()["id"].startswith("cgt-")
+
+
+def test_expired_jwt_is_401(client_app):
+    """过期的 JWT 不是"活的登录态" ⇒ 401（门卡语义：15 分钟寿命，过期就换）。"""
+    tc, *_ = client_app
+    jwt = _jwt({"id": "u-1", "type": "access_token",
+                "exp": time.time() - 10, "iat": time.time() - 1000})
+    resp = tc.post(TASKS_PATH, json=T2V_BODY, headers={"Authorization": f"Bearer {jwt}"})
+    assert resp.status_code == 401
+
+
+def test_refresh_type_jwt_is_401(client_app):
+    """`type=refresh_token` 不是 access token ⇒ 401（只认活的会话门卡，不收长期凭据）。"""
+    tc, *_ = client_app
+    jwt = _jwt({"id": "u-1", "type": "refresh_token",
+                "exp": time.time() + 30 * 86400, "iat": time.time()})
+    resp = tc.post(TASKS_PATH, json=T2V_BODY, headers={"Authorization": f"Bearer {jwt}"})
     assert resp.status_code == 401
 
 

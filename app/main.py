@@ -44,7 +44,7 @@ from .errors import (
 )
 from .service import QwenVideoService
 from .store import TaskStore
-from .upstream.qwen.accounts import AccountPool
+from .upstream.qwen.accounts import AccountPool, jwt_payload
 from .upstream.qwen.client import QwenClient
 
 logger = logging.getLogger("qwen.main")
@@ -127,6 +127,31 @@ def create_app(settings: Settings | None = None, *, store: TaskStore | None = No
         return JSONResponse(status_code=exc.status_code,
                             content=exc.to_body(request_id), headers=headers)
 
+    def _key_accepted(key: str) -> bool:
+        """三种形态的调用方凭据（2026-10-01 用户口径）：
+
+          ① **静态 Key**：`API_KEYS` 白名单逐字比对（`sk-qwen-…` 等）；
+          ② **账号串** `<email>|<password>`：同上（它就是白名单里的一条不透明字符串）；
+          ③ **JWT 门卡**：调用方拿自己的 qwen access token 当 Key —— 形状 + `type`
+             = `access_token` + `exp` 未过期即认（**不验签**：签名校验只有上游能做，
+             这里只做"是不是一份活的 access token"的形状闸门）。透传账号语义：
+             门卡证明"你有一个活的 qwen 登录态"，上游凭据仍由账号池托管。
+
+        JWT 门卡的归属注意：access token 15 分钟一换，换新后指纹随之改变 ⇒
+        用 JWT 建的任务，**旧 JWT 过期后不可再读**（要持久归属请用 ①/②）。
+        """
+        if any(secrets.compare_digest(key, known) for known in settings.api_keys):
+            return True
+        payload = jwt_payload(key)
+        if payload is None:
+            return False
+        try:
+            if str(payload.get("type") or "") != "access_token":
+                return False
+            return float(payload.get("exp") or 0) > time.time()
+        except (TypeError, ValueError):
+            return False
+
     def credential_id_of(request: Request) -> str:
         if not settings.api_keys:
             # 未配置 API_KEYS ⇒ 鉴权关闭（仅限内网；接入文档已显式声明）
@@ -135,7 +160,7 @@ def create_app(settings: Settings | None = None, *, store: TaskStore | None = No
         if not authorization.lower().startswith("bearer "):
             raise AuthenticationError("缺少 Authorization: Bearer <API Key>")
         key = authorization[7:].strip()
-        if not any(secrets.compare_digest(key, known) for known in settings.api_keys):
+        if not _key_accepted(key):
             raise AuthenticationError("API Key 无效")
         return fingerprint(secret, key)
 
