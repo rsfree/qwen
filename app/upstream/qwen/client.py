@@ -161,8 +161,14 @@ class QwenClient:
                 extra_cookies: str = "") -> dict[str, str]:
         """请求头（照 `biz-api::build_headers` 逐字段对齐）。
 
-        `token=None` ⇒ 不带 `Cookie`（`GET /api/models` 实测免鉴权，见 UPSTREAM §1）；
-        `extra_cookies` 只在给了 token 时拼接（无凭据的公共端点没有"附加 cookie"语义）。
+        `token` 参数实为**凭据**，两种形态按形状自动识别（pair 门，2026-09-30 起）：
+          · **完整 jar**（含 `;` 分隔的多个 cookie，或以 `token=` 开头）——账号池
+            `credential_for()` 给的同源会话 jar（`token=` + `refresh_token=` +
+            WAF 冷启动章），**原样**作为 `Cookie` 发出 —— token 与 jar 同源是
+            身份自洽的前提（token 配别人的 jar ⇒ x5sec，2026-09-22 实测）；
+          · **裸 JWT**（无 `;` 不以 `token=` 开头）—— 旧形态，包成 `token=<jwt>`。
+        `None` ⇒ 不带 `Cookie`（`GET /api/models` 实测免鉴权，见 UPSTREAM §1）；
+        `extra_cookies` 只在给了凭据时拼接（无凭据的公共端点没有"附加 cookie"语义）。
         """
         s = self.settings
         headers = {
@@ -186,7 +192,8 @@ class QwenClient:
             "sec-ch-ua-platform": '"macOS"',
         }
         if token or extra_cookies:
-            cookie = f"token={token}" if token else ""
+            is_jar = bool(token) and (";" in token or token.startswith("token="))
+            cookie = token if is_jar else (f"token={token}" if token else "")
             if extra_cookies:
                 cookie = f"{cookie}; {extra_cookies}" if cookie else extra_cookies
             headers["Cookie"] = cookie

@@ -25,6 +25,7 @@ SELF = Path(__file__).resolve()
 #: 允许出现在公开仓里的主机名 —— 每条必须能说出理由（新域名要显式加进来，别改成宽正则）
 ALLOWED_HOSTS: dict[str, str] = {
     "chat.qwen.ai": "服务对象（上游）",
+    "auth.qwen.ai": "上游认证域（2026-09-30 改版：signin/refresh 迁入，滑块墙只在新认证域能过）",
     "cdn.qwenlm.ai": "上游产物 CDN",
     "qwen-chat.oss-ap-southeast-1.aliyuncs.com": "i2v 冒烟用的上游样例图",
     "ark.cn-beijing.volces.com": "能力回退通道端点（火山方舟公开云服务，Interface §10）",

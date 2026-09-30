@@ -111,6 +111,10 @@ class Settings:
     #: 🔴 直连登录会把出口打进 WAF 墙，必须配轮换出口（或改用 `token_url`）。
     signin_proxy: str = ""
     token_url: str = ""
+    #: 🔴 认证域基址（**含 `/api` 前缀**）：2026-09-30 起认证在独立域 **auth.qwen.ai** ——
+    #: 旧域 signin 对纯 HTTP 客户端回滑块挑战页。auth 域还住着 refresh（续期主路，
+    #: 免密码免预热不拦滑块）。正常情况**不需要改**；厂商再换域时用这个键接管，不发版。
+    auth_base: str = "https://auth.qwen.ai/api"
     #: token 缓存**上限**（秒）—— 主动续期取 `min(JWT 的 exp - 提前量, 铸后本值)`。
     #: 🔴 6 天 = **给"实际可能 7 天失效"预留 1 天**：`exp` 是上游**自称**的（实测 30 天），
     #: 服务端可能提前失效 ⇒ 用本值压住，别赌到最后一刻。
@@ -195,6 +199,7 @@ class Settings:
             account_cookies=parse_account_cookies(env),
             signin_proxy=_env(env, "QWEN_SIGNIN_PROXY"),
             token_url=_env(env, "QWEN_TOKEN_URL"),
+            auth_base=_env(env, "QWEN_AUTH_BASE") or "https://auth.qwen.ai/api",
             token_ttl=_num(env, "QWEN_TOKEN_TTL", 518400.0),
             signin_min_interval=_num(env, "QWEN_SIGNIN_MIN_INTERVAL", 45.0),
             signin_wait_timeout=_num(env, "QWEN_SIGNIN_WAIT_TIMEOUT", 45.0),

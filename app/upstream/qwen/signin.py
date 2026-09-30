@@ -1,42 +1,64 @@
-"""qwen 账号 signin（铸造 token JWT）—— **出口只走 HTTP(S) 代理**。
+"""qwen 账号凭据铸造：token **+ 同源会话 jar**（signin 与 refresh 两条路）。
 
-纪律（全部有实测教训）：
-  · `POST /api/v2/auths/signin`，body `{"email", "password": sha256hex(password)}`；
-    token **只在 `Set-Cookie`**（body 是账号记录，没有 token）；
-  · **signin 有 IP 级频率墙**：同一出口几秒内连登多个账号会拿到 `aliyun_waf` 挑战页
-    ⇒ 必须走**轮换出口**；直连登录是"把出口打进墙"的标准姿势；
-  · 先 `GET /auth` 预热（best-effort），把 WAF 冷启动 cookie 种进会话；
-  · 请求需带浏览器特征头（UA + `sec-ch-ua*`），否则同样吃挑战页 —— 单变量实测过。
+🔴 2026-09-30 上游改版（当日实测，契约移植自 image-adapter
+`script_store/qwen/images@v1.py` 的生产验证版）：
 
-**为什么是 HTTP 代理**（2026-09-22 对池的实测，`pool:2086`）：
+  · 认证搬去独立域 **auth.qwen.ai** —— 旧域（chat.qwen.ai）的 signin 对**一切纯 HTTP
+    客户端**回滑块挑战页（httpx / curl_cffi chrome 模拟 / 任意出口 / 任意账号 ⇒ 全灭，
+    挑战页 200 + text/html、25×captcha+slider，无可计算项，纯 HTTP 无解）；
+  · **signin** = `POST {auth}/v2/auths/signin`（`email` + `sha256hex(password)`），
+    新契约：会话 token 在**响应体** `data.access_token`（**15 分钟**寿命），
+    Set-Cookie 只剩 `refresh_token`（30 天、HttpOnly、`Domain=.qwen.ai`）；
+    旧契约（`token=` cookie）保留为兜底读法。头集缺一件 ⇒ `Invalid request header`
+    （报错原文就在响应 `details` 里；`version` 必须是 **0.3.12** —— auth 域自报的版本，
+    不是写端点的 0.2.0）；
+  · **refresh** = `GET {auth}/v2/auths/refresh`，`Cookie` 带会话 jar（内含
+    refresh_token）⇒ 体 `data{access_token, refresh_token}`。免密码、免预热、
+    **不拦滑块**、无 IP 墙 ⇒ 正常续期（15 分钟一次）全走这条路；signin 只在 RT
+    也失效时发生（≈30 天一次）。refresh_token 实测**不轮换**（同一份复用），
+    但响应给了新值就照收（写回 jar，"有则覆盖"）；
+  · 🔑 **pair 门（token×jar 成对）**：token 与**产出它的那次会话**种下的 cookie
+    （预热拿的 WAF 冷启动章 `acw_tc`/`x-ap` + signin 的 Set-Cookie 全集）是一套
+    身份，写请求必须整套装出去 —— 实测 2026-09-22，token 配别人的 jar ⇒ x5sec，
+    而账号本身登录毫无问题。所以本模块返回的是 `(token, jar)` 二元组，jar 与
+    token 同源同缓存；
+  · signin 有 **IP 级频率墙**（实测 ≈12 次/6 分钟触发；挑战页 200 + text/html，
+    持续数分钟，只有换出口才恢复）⇒ 必须走轮换出口，且调用方要节流（账号池的
+    `_pace_signin` 负责，不在本模块）。
 
-| 语义 | 实测 | 为什么正好合适 |
-|---|---|---|
-| 每连接换出口 IP | 三次新 client = `.96 / .97 / .98` | **每次铸造换一个 IP** ⇒ 不撞登录 IP 墙 |
-| 同连接复用同 IP | 同 client 两次请求 = 同一 IP | 一次铸造的「预热 + 登录」**全程一个 IP**（自洽）|
+为什么是 HTTP 代理（池实测语义）：**每连接换出口 IP + 同连接复用同 IP** ⇒ 每次
+铸造换一个 IP、一次铸造内"预热 + signin"全程同一 IP（自洽）。🔴 别把铸造改成
+常驻 client —— 多次登录共用出口正好撞 IP 墙。refresh 不经代理（直连，无墙）。
 
-⇒ HTTP 形态同时满足"每次登录换 IP"与"一次登录内部不跳"。
-对比此前自研的 SOCKS5 拨号器：它一次铸造开**两条连接**（预热 + 登录），
-用"每连接换 IP"的池时那两条**可能落在两个 IP**。
-故已按用户决策（2026-09-22：**不做兼容**）**删除 SOCKS 分支**，少约 130 行自研 socket/TLS/HTTP 解析。
-
-移植自 `image-adapter/tools/token_service.py`（生产验证版，仅新增浏览器头与可注入 UA / transport）。
+⚠️ httpx 的 `proxy=` 是 mounts，会覆盖自定义 `transport` —— 测试注入 MockTransport
+时必须跳过 proxy（`transport` 参数仅测试用，给了就不走代理）。
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
 import urllib.parse
+import uuid
+from datetime import datetime
 
 import httpx
 
-SIGNIN_PATH = "/api/v2/auths/signin"
+from ...config import UA_DEFAULT
+
+SIGNIN_PATH = "/v2/auths/signin"
+REFRESH_PATH = "/v2/auths/refresh"
 WARM_PATH = "/auth"
+#: auth 域基址（**含 `/api` 前缀**，signin/refresh 路径直接拼在后面）。
+AUTH_BASE_DEFAULT = "https://auth.qwen.ai/api"
+#: auth 域 web 端自报版本（2026-09-30 抓包实测值）。厂商改版后若 signin 开始拒头
+#: （`Invalid request header`），先怀疑这个值漂移了。
+AUTH_WEB_VERSION = "0.3.12"
 
 
 class MintError(RuntimeError):
-    """signin 未能产出 token（网络 / 出口 / 被拒）。"""
+    """signin/refresh 未能产出 token（网络 / 出口 / 被拒）。"""
 
 
 class WallError(MintError):
@@ -45,42 +67,181 @@ class WallError(MintError):
 
 def browser_hint_headers(user_agent: str) -> dict[str, str]:
     return {
-        "Accept": "application/json, text/plain, */*",
         "Accept-Language": "zh-CN,zh;q=0.9",
         "User-Agent": user_agent,
         "sec-ch-ua": '"Chromium";v="152", "Not?A_Brand";v="24", "Google Chrome";v="152"',
         "sec-ch-ua-mobile": "?0",
         "sec-ch-ua-platform": '"macOS"',
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "same-origin",
     }
 
 
-# ------------------------------------------------------------------ token 铸造
+def _tz_header() -> str:
+    """`Date().toString()` 形状（浏览器同款），每次现做。"""
+    return datetime.now().astimezone().strftime("%a %b %d %Y %H:%M:%S GMT%z")
 
 
-def extract_token_from_setcookie(set_cookies: list[str]) -> str:
-    for raw in set_cookies:
-        found = re.search(r"(?:^|[;\s])token=([^;]+)", raw)
-        if found:
-            return found.group(1).strip()
+# ------------------------------------------------------------------ jar 工具
+
+
+def jar_parts(cookie: str, drop_token: bool = False) -> list[str]:
+    """jar 串的条目列表；`drop_token` 时剔除 `token=` 条。"""
+    parts = [p.strip() for p in str(cookie or "").split(";") if p.strip()]
+    if drop_token:
+        parts = [p for p in parts if p.partition("=")[0].strip() != "token"]
+    return parts
+
+
+def with_entry(cookie: str, name: str, value: str) -> str:
+    """jar 里替换/追加 `name=value`，其余条目原样保留。
+
+    `token=` 必须**替换**而不是追加：旧 token 挨着新 token 留在 jar 里，
+    哪份生效就交给上游猜了 —— 认证路径上不掷硬币。
+    """
+    parts = [p for p in jar_parts(cookie) if p.partition("=")[0].strip() != name]
+    return "; ".join(parts + [f"{name}={value}"])
+
+
+def with_token(cookie: str, token: str) -> str:
+    return with_entry(cookie, "token", token)
+
+
+def cookie_entry(cookie: str, name: str) -> str:
+    """jar 里 `name` 的值（没有则空串）。手写解析：JWT 满是 `=`/`.`，SimpleCookie 会啃坏。"""
+    for part in jar_parts(cookie):
+        key, _, value = part.partition("=")
+        if key.strip() == name:
+            return value.strip()
     return ""
 
 
+def cookie_header_from_setcookies(set_cookies: list[str]) -> str:
+    """`Set-Cookie` 值列表 → 一条 Cookie 头（只留 name=value，属性丢弃）。
+
+    同名**后出现者为准**（浏览器语义）；没有 `=` 的段跳过。
+    """
+    pairs: dict[str, str] = {}
+    for raw in set_cookies:
+        pair = str(raw).split(";", 1)[0].strip()
+        if "=" not in pair:
+            continue
+        name = pair.split("=", 1)[0].strip()
+        if name:
+            pairs[name] = pair
+    return "; ".join(pairs.values())
+
+
+def extract_token_from_setcookie(set_cookies: list[str]) -> str:
+    r"""旧契约：`Set-Cookie` 里的 `token=<jwt>`。
+
+    ⚠️ 2026-09-30 起 Set-Cookie 只剩 `refresh_token` —— `refresh_token=` 是
+    `token=` 的子串陷阱，正则带 `(?:^|[;\s])` 边界就是为了不吃它。
+    """
+    for raw in set_cookies:
+        m = re.search(r"(?:^|[;\s])token=([^;]+)", str(raw))
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
+def jwt_exp(token: str) -> float:
+    """JWT 载荷 `exp`（不验签，只看新鲜度）；取不到回 0。"""
+    try:
+        part = str(token).split(".")[1]
+        part += "=" * (-len(part) % 4)
+        return float(json.loads(base64.urlsafe_b64decode(part)).get("exp") or 0)
+    except Exception:  # noqa: BLE001 - 坏 token 一律当已过期
+        return 0.0
+
+
+def _body_access_token(text: str) -> str:
+    """新契约：signin/refresh 响应体 `data.access_token`。"""
+    try:
+        doc = json.loads(text or "{}")
+    except ValueError:
+        return ""
+    data = doc.get("data") if isinstance(doc, dict) else None
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("access_token") or "").strip()
+
+
+def _body_refresh_token(text: str) -> str:
+    """refresh 响应体里的 `data.refresh_token`（实测不轮换；有就照收）。"""
+    try:
+        doc = json.loads(text or "{}")
+    except ValueError:
+        return ""
+    data = doc.get("data") if isinstance(doc, dict) else None
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("refresh_token") or "").strip()
+
+
+def _response_set_cookies(resp: httpx.Response) -> list[str]:
+    """httpx 的多值 Set-Cookie（`headers.get_list`）。"""
+    return [raw for raw in resp.headers.get_list("set-cookie") if raw]
+
+
+# ------------------------------------------------------------------ 头集
+
+
+def _signin_headers(user_agent: str) -> dict[str, str]:
+    """signin/refresh 共用的 web 端头集 + 每发新铸的 Timezone / X-Request-Id。
+
+    后两者与浏览器行为一致：每次调用都该是新的。缺任何一件（尤其
+    `version: 0.3.12` 与 `x-request-origin`）⇒ `Invalid request header`。
+    """
+    head = {
+        "Accept": "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        "Origin": "https://chat.qwen.ai",
+        "Referer": "https://chat.qwen.ai/",
+        # chat → auth 是跨源同站（同属 *.qwen.ai），浏览器实际报 same-site。
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site",
+        "source": "web",
+        "version": AUTH_WEB_VERSION,
+        "x-request-origin": "https://chat.qwen.ai",
+        "Timezone": _tz_header(),
+        "X-Request-Id": str(uuid.uuid4()),
+    }
+    head.update(browser_hint_headers(user_agent))
+    return head
+
+
+def _warm_headers(user_agent: str) -> dict[str, str]:
+    """预热（导航形态）：只为拿 WAF 冷启动 cookie（acw_tc / x-ap）。"""
+    head = {
+        "Accept": ("text/html,application/xhtml+xml,application/xml;q=0.9,"
+                   "image/avif,image/webp,*/*;q=0.8"),
+        "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none", "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+    }
+    head.update(browser_hint_headers(user_agent))
+    return head
+
+
+# ------------------------------------------------------------------ 铸造 / 续期
+
+
 def mint_token(proxy_url: str, email: str, password: str, *,
-               timeout: float = 40.0, base: str = "https://chat.qwen.ai",
+               base_url: str = "https://chat.qwen.ai",
+               auth_base: str = AUTH_BASE_DEFAULT,
                user_agent: str = "",
-               transport: httpx.BaseTransport | None = None) -> str:
-    """经**轮换出口**（HTTP(S) 代理）登录一个账号，返回 token JWT。失败抛 `MintError` / `WallError`。
+               timeout: float = 40.0,
+               transport: httpx.BaseTransport | None = None) -> tuple[str, str]:
+    """经**轮换出口**登录一个账号，返回 `(token, jar)`。
 
-    🔴 **每次调用新建一个 client** = 新连接 = **新出口 IP**（池按连接轮换）；
-    而**同一个 client 内**做「预热 + 登录」，靠隧道复用保证这一次铸造**全程同一个 IP**。
-    这两个语义都有实测支撑（见模块 docstring 的表）—— 别合并成一个长生命周期的 client，
-    那会让多次登录共用一个出口，正好撞上 IP 级登录墙。
+    流程：`GET {chat 源}/auth` 预热（best-effort，收集 WAF 冷启动 cookie）→
+    `POST {auth 源}/v2/auths/signin`。token 先读响应体（新契约），回落
+    Set-Cookie（旧契约）；jar = 预热 + signin 种下的 cookie 全集，`token=`
+    已写入（pair 门：token 与 jar 必须同源）。
 
-    `transport` 仅测试注入：httpx 的 `proxy=` 会以 mounts **覆盖**自定义 transport（二者不能共存），
-    所以给了 transport 就**不走代理** —— 生产路径永远只在 `proxy=None` 时发生。
+    🔴 每次调用新建一个 client = 新连接 = 新出口 IP；同 client 内"预热 + 登录"
+    靠连接复用保证全程同一出口。失败分类：挑战页 ⇒ `WallError`；其余（非 200 /
+    拿不到 token / 传输失败 / 非 http(s) 代理）⇒ `MintError`。
     """
     raw_url = proxy_url if "://" in proxy_url else f"http://{proxy_url}"
     scheme = urllib.parse.urlsplit(raw_url).scheme.lower()
@@ -89,24 +250,28 @@ def mint_token(proxy_url: str, email: str, password: str, *,
             f"signin 出口只收 http(s):// 代理，收到 {scheme!r}（SOCKS 分支已移除）")
 
     digest = hashlib.sha256(password.encode()).hexdigest()
-    common = {**browser_hint_headers(user_agent or _default_ua()),
-              "Origin": base, "Referer": base + WARM_PATH}
-    body = json.dumps({"email": email, "password": digest}).encode()
+    ua = user_agent or UA_DEFAULT
+    auth_origin = urllib.parse.urlsplit(auth_base)
+    auth_root = f"{auth_origin.scheme}://{auth_origin.netloc}"
 
     kwargs: dict = {"timeout": timeout, "trust_env": False}
-    if transport is not None:      # 测试注入：不走代理（见 docstring）
+    if transport is not None:      # 测试注入：不走代理（proxy= 会覆盖 transport）
         kwargs["transport"] = transport
     else:
         kwargs["proxy"] = raw_url
 
+    warm_cookies: list[str] = []
     with httpx.Client(**kwargs) as client:
-        try:  # 预热：拿 WAF 冷启动 cookie（best-effort，失败不阻断）
-            client.get(f"{base}{WARM_PATH}", headers=common)
+        try:  # 预热 best-effort：只决定 WAF 冷启动 cookie 的有无，失败不阻断登录
+            resp = client.get(f"{base_url}{WARM_PATH}", headers=_warm_headers(ua))
+            warm_cookies = _response_set_cookies(resp)
         except httpx.HTTPError:
             pass
         try:
-            resp = client.post(f"{base}{SIGNIN_PATH}", content=body,
-                               headers={**common, "Content-Type": "application/json"})
+            resp = client.post(
+                f"{auth_root}{SIGNIN_PATH}",
+                content=json.dumps({"email": email, "password": digest}).encode(),
+                headers=_signin_headers(ua))
         except httpx.HTTPError as exc:
             raise MintError(f"signin 传输失败：{type(exc).__name__}: {exc}") from exc
 
@@ -115,13 +280,52 @@ def mint_token(proxy_url: str, email: str, password: str, *,
         raise WallError("this egress is answering the WAF challenge page")
     if resp.status_code != 200:
         raise MintError(f"signin answered HTTP {resp.status_code}")
-    token = extract_token_from_setcookie(resp.headers.get_list("set-cookie"))
+    signed = _response_set_cookies(resp)
+    token = _body_access_token(text) or extract_token_from_setcookie(signed)
     if not token:
-        raise MintError("no token in Set-Cookie")
-    return token
+        raise MintError(
+            "signin 回了 200 但没有 token（body access_token / Set-Cookie token= 均无）；"
+            f"body 头部：{text[:120]!r}")
+    jar = with_token(cookie_header_from_setcookies(warm_cookies + signed), token)
+    return token, jar
 
 
-def _default_ua() -> str:
-    from ...config import UA_DEFAULT
+def refresh_auth(jar: str, *, auth_base: str = AUTH_BASE_DEFAULT,
+                 user_agent: str = "", timeout: float = 30.0,
+                 transport: httpx.BaseTransport | None = None) -> tuple[str, str]:
+    """用会话 jar（内含 refresh_token）换一份新 access token，返回 `(token, jar)`。
 
-    return UA_DEFAULT
+    **续期主路**：免密码、免预热、不拦滑块、无 IP 墙（直连即可）。jar 更新两条：
+    新 `token=`（写请求认的就是它）与响应体里的 `refresh_token`（有则覆盖；
+    实测同一份复用不轮换，但轮换与否不该由我们猜）。
+
+    **best-effort**：任何失败（RT 缺失/失效/网络问题）都返回 `("", 原 jar)`，
+    由调用方回落 signin —— 这条捷径不该成为新的失败点。
+    """
+    if not cookie_entry(jar, "refresh_token"):
+        return "", jar
+    ua = user_agent or UA_DEFAULT
+    auth_origin = urllib.parse.urlsplit(auth_base)
+    auth_root = f"{auth_origin.scheme}://{auth_origin.netloc}"
+    headers = {**_signin_headers(ua), "Cookie": jar}
+    try:
+        if transport is not None:  # 测试注入：直连 transport（不经代理）
+            with httpx.Client(transport=transport, trust_env=False, timeout=timeout) as client:
+                resp = client.get(f"{auth_root}{REFRESH_PATH}", headers=headers)
+        else:
+            resp = httpx.get(f"{auth_root}{REFRESH_PATH}", headers=headers,
+                             timeout=timeout, trust_env=False)
+    except httpx.HTTPError:
+        return "", jar
+    try:
+        text = resp.content.decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001 - 解不出体即当失败
+        return "", jar
+    token = _body_access_token(text)
+    if not token:
+        return "", jar
+    fresh_jar = with_token(jar, token)
+    fresh_rt = _body_refresh_token(text)
+    if fresh_rt:
+        fresh_jar = with_entry(fresh_jar, "refresh_token", fresh_rt)
+    return token, fresh_jar

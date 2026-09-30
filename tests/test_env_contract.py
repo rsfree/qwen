@@ -43,6 +43,7 @@ KEY_TO_FIELD: dict[str, str | None] = {
     "QWEN_ACCOUNT_COOKIES_FILE": None,
     "QWEN_SIGNIN_PROXY": "signin_proxy",
     "QWEN_TOKEN_URL": "token_url",
+    "QWEN_AUTH_BASE": "auth_base",
     "QWEN_TOKEN_TTL": "token_ttl",
     "QWEN_SIGNIN_MIN_INTERVAL": "signin_min_interval",
     "QWEN_SIGNIN_WAIT_TIMEOUT": "signin_wait_timeout",

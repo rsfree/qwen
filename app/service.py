@@ -143,19 +143,21 @@ class QwenVideoService:
         return (self.settings.account_cookies or {}).get(email, "")
 
     def _authed_call(self, email: str, fn: Callable[[str], Any]) -> Any:
-        """带该账号的 token 调用 `fn(token)`；**判 401 时立即重铸 token 并重试一次**。
+        """带该账号的**凭据**（同源 jar，含 token；pair 门）调用 `fn(credential)`；
+        **判 401 时立即重铸凭据并重试一次**。
 
-        这是"token 提前失效"的**兜底**：`exp` 是上游**自称**的（实测 30 天），服务端完全可能更早失效
-        ⇒ 与其等下一次调用，不如当场重铸重试。判据也成立：401 = 上游**未受理**，重试不会重复计费。
+        这是"token 提前失效"的**兜底**：auth 域 access token 只有 15 分钟，服务端也可能
+        更早失效 ⇒ 与其等下一次调用，不如当场重铸重试（重铸先走 refresh，RT 失效才
+        signin）。判据也成立：401 = 上游**未受理**，重试不会重复计费。
 
         只重试**一次**：第二次仍 401 ⇒ 不是"token 过期"，而是凭据/账号本身的问题 ⇒
         `report_failure(auth)`（冷却 900s）后照实上抛。
         """
         attempts = 2
         for attempt in range(1, attempts + 1):
-            token = self.pool.token_for(email)
+            credential = self.pool.credential_for(email)
             try:
-                return fn(token)
+                return fn(credential)
             except AuthenticationError:
                 if attempt == attempts:
                     self.pool.report_failure(email, "auth")
@@ -411,20 +413,20 @@ class QwenVideoService:
 
     def _task_status_with_remint(self, email: str, upstream_task_id: str,
                                  extra: str) -> tuple[dict, int, dict]:
-        """查询任务；**被判 401 时重铸 token 再试一次**（查询只读 ⇒ 重试零风险、零额度）。
+        """查询任务；**被判 401 时重铸凭据再试一次**（查询只读 ⇒ 重试零风险、零额度）。
 
         两次都 401 ⇒ 不是"token 过期"而是账号/凭据问题 ⇒ 冷却 900s + 503
         （**部署问题，不是调用方 Key 的错** —— 混淆会让对方去改自己的请求）。
         """
-        token = self.pool.token_for(email)
-        result = self.client.task_status(token, upstream_task_id, extra_cookies=extra)
+        credential = self.pool.credential_for(email)
+        result = self.client.task_status(credential, upstream_task_id, extra_cookies=extra)
         actual = int(result["actual_status_code"])
         data: dict = result["data"] or {}
         if actual == 401 or data.get("code") == "Unauthorized":
-            logger.warning("查询被判 401 —— 重铸 token 后重试一次（%s）", mask_email(email))
+            logger.warning("查询被判 401 —— 重铸凭据后重试一次（%s）", mask_email(email))
             self.pool.invalidate_token(email)
-            token = self.pool.token_for(email)
-            result = self.client.task_status(token, upstream_task_id, extra_cookies=extra)
+            credential = self.pool.credential_for(email)
+            result = self.client.task_status(credential, upstream_task_id, extra_cookies=extra)
             actual = int(result["actual_status_code"])
             data = result["data"] or {}
             if actual == 401 or data.get("code") == "Unauthorized":

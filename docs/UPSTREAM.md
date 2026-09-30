@@ -169,6 +169,42 @@ Cookie: token=<JWT>
 ⚠️ **口径偏差（如实标注）**：图片侧要求「一格一号」（6 格 6 个号）；本次只有**一个账号** ⇒
 `cookie` 与 `bearer` 两格落在同一个号上（中间**强制冷却 90s**）。要严格版请给足账号，探针支持 `--forms` 逐格指定。
 
+### 2.7 🔴 2026-09-30 认证域改版：滑块墙 + auth.qwen.ai + bx 三件套（当日一手实测闭环）
+
+**上游变更**（上表 2.6 的结论自此修订）：chat 域的 **signin 与写端点**对**一切纯 HTTP 客户端**
+回 aliyun_waf **滑块挑战页**（HTTP 200 + text/html、16KB、25×captcha+slider，无可计算项）——
+httpx / curl_cffi(chrome) / 池三个网段出口 / VPS 直连 / 全新账号 ⇒ **全灭**；**与 IP、账号、
+TLS 指纹均无关**（各变量单发实测排除）。
+
+**通行证（三层，全部当日实测）**：
+
+1. 🔑 **`bx-ua` / `bx-umidtoken` / `bx-v` 三件套**（浏览器 JS 生成）：带它们 ⇒ 写端点放行；
+   **捕获值可跨 IP 重放**（本机浏览器捕获 → VPS 重放 `waf=False`）。查询 GET **不需要**。
+2. **认证迁独立域 `auth.qwen.ai`**：浏览器登录根本不走 chat 域 ——
+   - `POST https://auth.qwen.ai/api/v2/auths/signin`（`email` + `sha256hex(password)`）⇒
+     响应**体** `data.access_token`（**15 分钟**寿命），Set-Cookie 只剩 `refresh_token`
+     （30 天、HttpOnly、`Domain=.qwen.ai`；实测**不轮换**）。头集缺一件 ⇒
+     `Invalid request header`；`version` 必须是 **`0.3.12`**（auth 域自报版本，
+     **不是**写端点的 0.2.0），另需 `x-request-origin`/`source`/`sec-fetch-site: same-site`。
+   - `GET https://auth.qwen.ai/api/v2/auths/refresh`（Cookie 带 jar，内含 RT）⇒
+     体 `data{access_token, refresh_token}`。**免密码、免预热、不拦滑块、无 IP 墙**
+     ⇒ **续期主路**（15 分钟一次）；signin 只在 RT 失效时发生（≈30 天一次）。
+     signin 另有 **IP 级频率墙 ≈12 次/6 分钟** ⇒ 仍必须走轮换出口 + 跨账号节流。
+3. **pair 门（token×jar 成对）**：写请求必须携带**产出该 token 的那次会话**种下的
+   cookie 全集（预热 `GET /auth` 的 WAF 冷启动章 `acw_tc`/`x-ap` + signin 的
+   Set-Cookie + `token=`）—— 实测 2026-09-22：token 配别人的 jar ⇒ x5sec。
+   "token-only jar" 在生成端点同样吃 x5sec（图片侧 2026-09-18 实测）。
+
+**端到端实证（VPS 直连）**：浏览器登录 → RT → refresh 全自动续期 → `chats/new`
+（body: `title/models/chat_mode/chat_type/timestamp(ms)/project_id`）→ t2v 创建（bx 头）
+→ `extra.wanx.task_id` → `/api/v2/task/status/<id>` 查询 → **真实出片 6.3MB**
+（`var/live/bx-probe-6f6f4644.mp4`，16:9）。挑战页形态另见 §9.
+
+**对服务的影响**：`upstream/qwen/signin.py` 全面改写（auth 域 signin + refresh +
+jar 工具）；账号池凭据 = `(token, jar)` 二元组、**jar/RT 进 KV 持久化**（政策修订：
+access token 仍不落盘）；客户端 Cookie 改发同源 jar（pair 门）。
+
+
 
 ---
 
