@@ -108,6 +108,29 @@ def test_quota_exhausted_maps_to_429(settings):
         submit(client)
 
 
+def test_credit_shortage_maps_to_quota_exhausted(settings):
+    """积分不足 ⇒ 同"额度耗尽"一类（未受理、未计费）⇒ 换号重试，而不是当未知错误炸掉。
+
+    ⚠️ 文案形态**未实测**（余额 15 分的第二单一撞滑块没跑成）⇒ 按关键词保守匹配，
+    判据见 `client.QUOTA_WORDS_UNPROVEN`。
+    """
+    for details in ("积分不足，无法生成视频", "credits not enough",
+                    "Insufficient credits", "余额不足"):
+        client = make_client(settings, lambda r, d=details: httpx.Response(
+            200, json={"success": False, "data": {"code": "RateLimited", "details": d}}))
+        with pytest.raises(QuotaExhaustedError):
+            submit(client)
+
+
+def test_unrelated_refusal_is_not_mistaken_for_quota(settings):
+    """关键词不得误伤：与额度/积分无关的拒绝仍走 `UpstreamError`（不瞎猜、不换号）。"""
+    client = make_client(settings, lambda r: httpx.Response(
+        200, json={"success": False, "data": {"code": "InternalError",
+                                              "details": "服务暂时不可用"}}))
+    with pytest.raises(UpstreamError):
+        submit(client)
+
+
 def test_chat_not_found_maps_to_notfound(settings):
     client = make_client(settings, lambda r: httpx.Response(
         200, json={"success": False, "data": {"code": "Not_Found",

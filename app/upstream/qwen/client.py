@@ -142,6 +142,34 @@ def extract_stream_finished(event: object) -> bool:
             and delta.get("phase") == "answer")
 
 
+# ------------------------------------------------------------------ 拒绝归类：额度 vs 积分
+
+
+#: 归到"额度耗尽"的**码**（已证实：`RateLimited` 是图片/视频侧的日常额度码；
+#: `quota_limit` 是 3.0-pro 的流内额度码 —— 均来自参考脚本实测）。
+QUOTA_CODES = ("RateLimited", "quota_limit")
+#: 归到"额度耗尽"的**词**。分两级证据：
+#:   · 已证实：`额度` / `quota`（本仓 09-22 起就按这两个词归类）；
+#:   · 🔴 **未实测**：`积分` / `credits` / `credit` / `insufficient` / `not enough` /
+#:     `余额` —— 2026-10-02 才确认视频按 **25 积分/条**计费、每日免费 +40 且**日清**，
+#:     但"积分不足时上游到底回什么文案"尚未抓到实证（余额 15 分的第二单一撞滑块就没跑成）。
+#:     这里按关键词保守匹配：**命中即换号重试**，判据是"积分/额度不足 ⇒ 上游根本没开始
+#:     生成 ⇒ 未计费 ⇒ 重试安全"；命中不了仍按原样落 `UpstreamError`（不瞎猜）。
+QUOTA_WORDS_PROVEN = ("额度", "quota")
+QUOTA_WORDS_UNPROVEN = ("积分", "credits", "credit", "insufficient",
+                        "not enough", "余额")
+
+
+def _is_quota_or_credit_refusal(code: str, details: str) -> bool:
+    """这次拒绝是"没额度/没积分"吗 ⇒ 是则换号重试（未受理 ⇒ 未计费 ⇒ 重试安全）。"""
+    if code in QUOTA_CODES:
+        return True
+    low = f"{code} {details}".lower()
+    if "额度" in details or "quota" in low:
+        return True
+    return any(w in low for w in QUOTA_WORDS_UNPROVEN)
+
+
 class QwenClient:
     def __init__(self, settings: Settings, *, transport: httpx.BaseTransport | None = None) -> None:
         self.settings = settings
@@ -239,9 +267,10 @@ class QwenClient:
             raise AuthenticationError(f"{op}: 上游凭据失效（Unauthorized）")
         if code in ("Not_Found",) or "Task not found" in details or "CHAT_NOT_FOUND" in details:
             raise NotFoundError(f"{op}: 上游不存在（Not_Found）：{details[:160] or code}")
-        if "额度" in details or "quota" in f"{code} {details}".lower():
-            raise QuotaExhaustedError(f"{op}: 上游额度已用尽：{details[:160] or code}")
+        if _is_quota_or_credit_refusal(code, details):
+            raise QuotaExhaustedError(f"{op}: 上游额度/积分已用尽：{details[:160] or code}")
         raise UpstreamError(f"{op}: 上游拒绝：{code or '(无码)'} {details[:200]}")
+
 
     # ------------------------------------------------------------------ 端点
 
