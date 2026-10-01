@@ -26,7 +26,7 @@ from app.upstream.qwen.signin import (
 )
 
 SIGNIN = "/v2/auths/signin"
-REFRESH = "/v2/auths/refresh"
+REFRESH = "/api/v2/auths/refresh"
 WARM = "/auth"
 
 
@@ -62,7 +62,7 @@ def test_signin_posts_to_auth_domain_and_reads_body_access_token():
 
     assert token == "JWT-abc.def.ghi"
     # 新契约：token 在响应体；Set-Cookie 只有 refresh_token —— 两者都要落进 jar
-    assert seen["host"] == "auth.qwen.ai" and seen["path"] == SIGNIN
+    assert seen["host"] == "auth.qwen.ai" and seen["path"] == "/api" + SIGNIN
     assert seen["body"]["email"] == "a@x.cn"
     assert seen["body"]["password"] == hashlib.sha256(b"s3cret").hexdigest()
     assert "s3cret" not in json.dumps(seen["body"]), "口令绝不明文外发"
@@ -105,7 +105,7 @@ def test_warmup_is_best_effort_and_does_not_block():
     token, jar = mint_token("a@x.cn", "pw",
                             transport=_transport(handler))
     assert token == "T2" and "token=T2" in jar
-    assert hits == [WARM, SIGNIN]
+    assert hits == [WARM, "/api" + SIGNIN]
 
 
 def test_waf_challenge_page_is_wall_error():
@@ -136,11 +136,11 @@ def test_proxy_transport_failure_is_mint_error():
                    transport=_transport(handler))
 
 
-def test_production_path_is_direct_and_never_env_proxy(monkeypatch):
-    """生产路径必须**直连**（auth 域对池代理出口回 502，2026-10-01 实测）+ `trust_env=False`。
+def test_production_path_uses_configured_proxy(monkeypatch):
+    """生产路径必须**显式带配置的轮换出口** + `trust_env=False`。
 
-    为什么单独测它：注入 `transport` 时走的是显式 transport 分支，证明不了
-    "默认分支真的直连" ⇒ 这里用 spy 断言构造 kwargs（无 proxy、trust_env=False）。
+    为什么单独测它：注入 `transport` 时 httpx 会跳过代理（proxy 是 mounts，覆盖
+    transport），"请求形状"用例证明不了"真的走了代理" ⇒ spy 断言构造 kwargs。
     """
     captured: dict = {}
     real_client = httpx.Client
@@ -151,9 +151,9 @@ def test_production_path_is_direct_and_never_env_proxy(monkeypatch):
             lambda r: httpx.Response(200, json={"data": {"access_token": "T"}})))
 
     monkeypatch.setattr(httpx, "Client", spy)
-    token, jar = mint_token("a@x.cn", "pw")
+    token, jar = mint_token("a@x.cn", "pw", proxy_url="http://u:p@pool.live:2086")
     assert token == "T"
-    assert "proxy" not in captured, "auth 域 signin 必须直连（池代理出口 502）"
+    assert captured["proxy"] == "http://u:p@pool.live:2086", "必须走配置的轮换出口"
     assert captured["trust_env"] is False, "别让宿主的 HTTP(S)_PROXY 静默接管"
 
 

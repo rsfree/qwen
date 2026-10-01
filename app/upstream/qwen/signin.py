@@ -37,7 +37,6 @@ import base64
 import hashlib
 import json
 import re
-import urllib.parse
 import uuid
 from datetime import datetime
 
@@ -61,6 +60,15 @@ class MintError(RuntimeError):
 
 class WallError(MintError):
     """出口被打进了 WAF 挑战页。"""
+
+
+class AlbadError(MintError):
+    """auth 域 alb 层 502 —— 路径/前缀打错或上游故障（不是凭据问题）。
+
+    🔴 2026-10-01 两小时误诊的教训：把 alb 502 当"上游故障/代理不通"排查了整整
+    两轮，真因是铸造路径丢了 `/api` 前缀（alb 对未路由路径一律 502）。单独成类 +
+    错误信息里写明怀疑方向，让下一个见到 502 的人第一眼就走对路。
+    """
 
 
 def browser_hint_headers(user_agent: str) -> dict[str, str]:
@@ -229,6 +237,7 @@ def mint_token(email: str, password: str, *,
                auth_base: str = AUTH_BASE_DEFAULT,
                user_agent: str = "",
                timeout: float = 40.0,
+               proxy_url: str | None = None,
                transport: httpx.BaseTransport | None = None) -> tuple[str, str]:
     """登录一个账号，返回 `(token, jar)`。**直连**（不经代理）。
 
@@ -248,12 +257,12 @@ def mint_token(email: str, password: str, *,
     """
     digest = hashlib.sha256(password.encode()).hexdigest()
     ua = user_agent or UA_DEFAULT
-    auth_origin = urllib.parse.urlsplit(auth_base)
-    auth_root = f"{auth_origin.scheme}://{auth_origin.netloc}"
 
     kwargs: dict = {"timeout": timeout, "trust_env": False}
-    if transport is not None:      # 测试注入：显式 transport
+    if transport is not None:      # 测试注入：显式 transport（proxy= 会覆盖 transport）
         kwargs["transport"] = transport
+    elif proxy_url:
+        kwargs["proxy"] = proxy_url
 
     warm_cookies: list[str] = []
     with httpx.Client(**kwargs) as client:
@@ -264,7 +273,7 @@ def mint_token(email: str, password: str, *,
             pass
         try:
             resp = client.post(
-                f"{auth_root}{SIGNIN_PATH}",
+                f"{auth_base.rstrip('/')}{SIGNIN_PATH}",
                 content=json.dumps({"email": email, "password": digest}).encode(),
                 headers=_signin_headers(ua))
         except httpx.HTTPError as exc:
@@ -273,6 +282,10 @@ def mint_token(email: str, password: str, *,
     text = resp.content.decode("utf-8", "replace")
     if "aliyun_waf" in text:
         raise WallError("this egress is answering the WAF challenge page")
+    if resp.status_code == 502 and "alb" in text:
+        raise AlbadError(
+            "auth 域 alb 502：先查 auth_base 是否含 /api 前缀（未路由路径一律 502，"
+            "2026-10-01 两小时误诊的根源），再查上游是否故障")
     if resp.status_code != 200:
         raise MintError(f"signin answered HTTP {resp.status_code}")
     signed = _response_set_cookies(resp)
@@ -287,6 +300,7 @@ def mint_token(email: str, password: str, *,
 
 def refresh_auth(jar: str, *, auth_base: str = AUTH_BASE_DEFAULT,
                  user_agent: str = "", timeout: float = 30.0,
+                 proxy_url: str | None = None,
                  transport: httpx.BaseTransport | None = None) -> tuple[str, str]:
     """用会话 jar（内含 refresh_token）换一份新 access token，返回 `(token, jar)`。
 
@@ -300,16 +314,17 @@ def refresh_auth(jar: str, *, auth_base: str = AUTH_BASE_DEFAULT,
     if not cookie_entry(jar, "refresh_token"):
         return "", jar
     ua = user_agent or UA_DEFAULT
-    auth_origin = urllib.parse.urlsplit(auth_base)
-    auth_root = f"{auth_origin.scheme}://{auth_origin.netloc}"
     headers = {**_signin_headers(ua), "Cookie": jar}
+    url = f"{auth_base.rstrip('/')}{REFRESH_PATH}"
     try:
-        if transport is not None:  # 测试注入：直连 transport（不经代理）
+        if transport is not None:  # 测试注入：显式 transport
             with httpx.Client(transport=transport, trust_env=False, timeout=timeout) as client:
-                resp = client.get(f"{auth_root}{REFRESH_PATH}", headers=headers)
+                resp = client.get(url, headers=headers)
+        elif proxy_url:
+            resp = httpx.get(url, headers=headers, timeout=timeout,
+                             trust_env=False, proxy=proxy_url)
         else:
-            resp = httpx.get(f"{auth_root}{REFRESH_PATH}", headers=headers,
-                             timeout=timeout, trust_env=False)
+            resp = httpx.get(url, headers=headers, timeout=timeout, trust_env=False)
     except httpx.HTTPError:
         return "", jar
     try:
