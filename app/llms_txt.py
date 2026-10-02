@@ -86,6 +86,9 @@ def render_llms_txt(settings: Settings, chat_models: list[str] | None = None) ->
                  f"`GET /api/models`，仅注册真正可跑 t2t 的条目）。")
     lines.append("思考档位：`reasoning_effort`（`none`/`minimal`=快速、`high`=强制思考、缺省=自动）或 "
                  "`enable_thinking:false`；流式思考期发空格心跳变相加速首字（正文前导一个空格）。")
+    lines.append("注意：少数模型（如 `qwen3.8-omni-flash`）在自动/强制思考档会把思考过程并入正文 `content`"
+                 "（无 `reasoning_content` 字段）——本服务对这类模型**缺省自动切快速档**保证正文干净；"
+                 "显式传 `reasoning_effort:\"high\"` 则照发并在 `degradations` 告警。")
     lines.append("")
     lines.append("### 附件解析（chat 门）")
     lines.append("")

@@ -384,7 +384,9 @@ def create_app(settings: Settings | None = None, *, store: TaskStore | None = No
                         f"qwen 无法表达{state_reason}；如需支持请在服务端配置回退通道"
                         "（ARK_FALLBACK_KEY + ARK_FALLBACK_MODEL）",
                         param="messages")
-            req = openai_chat.parse_openai_chat_request(body)
+            req = openai_chat.parse_openai_chat_request(
+                body, thinking_leak_models=settings.thinking_leak_models)
+
             if req.attachment and not settings.upload_enabled:
                 # 附件上传链未启用：有回退通道则转方舟（历史兼容），否则 400 指明配置项
                 if settings.ark_fallback_enabled:
@@ -475,7 +477,9 @@ def create_app(settings: Settings | None = None, *, store: TaskStore | None = No
                     f"qwen 无法表达{state_reason}；如需支持请在服务端配置回退通道"
                     "（ARK_FALLBACK_KEY + ARK_FALLBACK_MODEL）",
                     param="input")
-            req = openai_chat.parse_openai_chat_request(chat_body)
+            req = openai_chat.parse_openai_chat_request(
+                chat_body, thinking_leak_models=settings.thinking_leak_models)
+
             meta: dict = {}
             completion_id = openai_responses.new_response_id()
             created = int(time.time())

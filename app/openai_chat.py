@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from . import media
@@ -216,8 +217,30 @@ def _thinking_gear(body: dict) -> str:
     return "auto"
 
 
-def parse_openai_chat_request(body: dict) -> ChatRequest:
-    """OpenAI chat 请求 → `ChatRequest`。请求写错一律 400（`InvalidParameterError`）。"""
+#: 🔴 2026-10-02 实测缺陷模型名单（逗号分隔 env `QWEN_THINKING_LEAK_MODELS` 覆盖）：
+#: 这些模型在 **auto / thinking 档**把思考过程直接写进正文 `content`（不拆
+#: `reasoning_content`，也没有 `</analysis>` 标记），实测复现 3/3 含流式。
+#: 根因在**模型侧**：上游不发 `thinking_summary` 事件 ⇒ 本服务无从映射（对比同请求
+#: `qwen3.7-plus` 流式正确分离）。**fast 档干净**（`thinking_enabled:false` ⇒ 无思考）。
+#:
+#: 为何是名单而不是硬编码判定：模型注册清单有 TTL（`INTERFACE §8.1` 同源纪律）——
+#: 上游修好或换名后，改一行 env 即可，不必改代码发版。
+#: 默认值只含**实测确认**的模型；未实测的模型不猜。
+DEFAULT_THINKING_LEAK_MODELS: tuple[str, ...] = ("qwen3.8-omni-flash",)
+
+
+def _is_thinking_leak_model(model: str, leak_models: Sequence[str]) -> bool:
+    """模型是否在「思考泄漏」名单里（裸名比较，容忍调用方写 `qwen/` 前缀已剥离的形态）。"""
+    return bool(model) and model in tuple(leak_models)
+
+
+def parse_openai_chat_request(body: dict, *,
+                              thinking_leak_models: Sequence[str] | None = None) -> ChatRequest:
+    """OpenAI chat 请求 → `ChatRequest`。请求写错一律 400（`InvalidParameterError`）。
+
+    `thinking_leak_models`：思考摘要会漏进正文的模型名单（None ⇒ 用代码默认值）。
+    见 `_is_thinking_leak_model`。
+    """
     if not isinstance(body, dict):
         raise InvalidParameterError("请求体必须是 JSON 对象")
 
@@ -287,9 +310,27 @@ def parse_openai_chat_request(body: dict) -> ChatRequest:
         if key in body and body[key] not in (None, "", [], {}):
             degradations.append(f"参数 {key} 已忽略（上游 t2t 无此入参）")
 
+    leak_models = (DEFAULT_THINKING_LEAK_MODELS if thinking_leak_models is None
+                   else tuple(thinking_leak_models))
+    gear = _thinking_gear(body)
+    # 🔴 思考泄漏加固（2026-10-02 实测）：泄漏模型在 auto/thinking 档会把思考过程
+    # 写进正文 content ⇒ **缺省档（auto）静默降 fast**，让默认路径拿到干净正文。
+    # 调用方**显式**声明档位时不静默覆盖（显式意图优先），只写 degradation 告知风险
+    # —— 契合本项目「不静默丢/改调用方语义」纪律。
+    if _is_thinking_leak_model(model, leak_models) and gear == "auto":
+        gear = "fast"
+        degradations.append(
+            f"模型 {model} 实测会把思考过程混进正文（上游不发独立思考事件）"
+            f"⇒ 已自动切到快速档（reasoning_effort=\"none\"）以保证正文干净；"
+            f"需要思考请显式传 reasoning_effort:\"high\"（思考内容会并入正文）")
+    elif _is_thinking_leak_model(model, leak_models) and gear == "thinking":
+        degradations.append(
+            f"模型 {model} 实测不分离思考内容：reasoning_effort=\"high\" 的思考过程"
+            f"会并入正文 content（无 reasoning_content 字段）——按显式声明照发，请知悉")
+
     return ChatRequest(model_requested=model_requested, model=model, prompt=prompt,
                        stream=stream, files=files, attachment=attachment,
-                       thinking_gear=_thinking_gear(body),
+                       thinking_gear=gear,
                        degradations=degradations)
 
 

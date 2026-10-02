@@ -54,6 +54,7 @@ KEY_TO_FIELD: dict[str, str | None] = {
     "API_KEYS": "api_keys",
     "KEY_SECRET": "key_secret",
     "MODELS_CACHE_TTL": "models_cache_ttl",
+    "QWEN_THINKING_LEAK_MODELS": "thinking_leak_models",
     "ARK_FALLBACK_BASE": "ark_fallback_base",
     "ARK_FALLBACK_KEY": "ark_fallback_key",
     "ARK_FALLBACK_MODEL": "ark_fallback_model",
@@ -138,9 +139,17 @@ def resolve_default(key: str) -> object | None:
 
 
 def norm(value: object) -> str:
-    """归一化后再比：`0/False/off`、`60`/`60.0` 都是同一语义（否则会产出一屏假阳性）。"""
+    """归一化后再比：`0/False/off`、`60`/`60.0` 都是同一语义（否则会产出一屏假阳性）。
+
+    🔴 列表/元组按**逗号拼接**归一（与 env 里逗号分隔的书写形式对齐）——否则列表型
+    配置项（如 `ARK_FALLBACK_MODELS` / `QWEN_THINKING_LEAK_MODELS`）的默认值永远核不上：
+    代码默认是 `['a', 'b']`、模板写 `a,b`，字符串化后必然不等 ⇒ 门禁只能靠"注释留空"
+    绕过默认值核对。空列表归一为空串（⇒ 注释态 `# KEY=` 仍按"留空"处理，不核值）。
+    """
     if isinstance(value, bool):
         return "true" if value else "false"
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(v).strip() for v in value)
     text = str(value).strip()
     low = text.lower()
     if low in ("0", "false", "no", "off"):

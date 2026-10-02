@@ -12,6 +12,8 @@ import secrets
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .openai_chat import DEFAULT_THINKING_LEAK_MODELS
+
 UA_DEFAULT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36")
 
@@ -37,6 +39,21 @@ def _num(env: dict, name: str, default: float) -> float:
     if raw is None or str(raw).strip() == "":
         return default
     return float(raw)
+
+
+def _leak_models(env: dict) -> list[str]:
+    """思考泄漏模型名单（`QWEN_THINKING_LEAK_MODELS`，逗号分隔）。
+
+    🔴 刻意区分两种「空」——这是加固开关，语义不能含糊：
+    · **未设**（键不存在或 None）⇒ 用 `openai_chat.DEFAULT_THINKING_LEAK_MODELS`
+      （实测确认的缺陷模型）：**加固默认生效**，新部署不会静默裸奔。
+    · **显式设为空串/纯逗号** ⇒ 空名单 = 刻意关闭加固（上游修好后的回退开关）。
+    用普通 `_env()` 会把「未设」也读成空串 ⇒ 加固被静默关掉，故此处单独判键是否存在。
+    """
+    raw = env.get("QWEN_THINKING_LEAK_MODELS")
+    if raw is None:
+        return list(DEFAULT_THINKING_LEAK_MODELS)
+    return [m.strip() for m in str(raw).split(",") if m.strip()]
 
 
 def _int(env: dict, name: str, default: int) -> int:
@@ -141,6 +158,12 @@ class Settings:
     #: 上游模型清单（`GET /api/models`，免鉴权）的缓存时长（秒）。
     #: 到期才拉一次；拉取失败回退上一份好清单（负缓存同样顺延本值）。
     models_cache_ttl: float = 300.0
+    #: 🔴 「思考摘要漏进正文」的模型名单（裸名，逗号分隔）——命中且调用方**未显式**
+    #: 声明思考档位时，chat 门自动切快速档（2026-10-02 实测 `qwen3.8-omni-flash`）。
+    #: 🔴 **不设该 env ⇒ 走 `DEFAULT_THINKING_LEAK_MODELS`**（加固默认生效，新部署不裸奔）；
+    #: 显式设为空串/纯逗号 ⇒ **关闭加固**（上游修好后的回退开关，刻意区分「未设」与「设为空」）。
+    thinking_leak_models: list[str] = field(
+        default_factory=lambda: list(DEFAULT_THINKING_LEAK_MODELS))
 
     # —— 能力回退通道（chat 门；qwen 不支持的能力 → 方舟 chat，见 app/ark_fallback.py） ——
     #: 🔴 KEY 与 MODEL **同时**配置才启用；只配一个 ⇒ from_env 响亮失败（半启用最容易误判）。
@@ -213,6 +236,7 @@ class Settings:
             api_keys=[p.strip() for p in _env(env, "API_KEYS").split(",") if p.strip()],
             key_secret=_env(env, "KEY_SECRET"),
             models_cache_ttl=_num(env, "MODELS_CACHE_TTL", 300.0),
+            thinking_leak_models=_leak_models(env),
             ark_fallback_base=ark_base or ARK_DEFAULT_BASE,
             ark_fallback_key=ark_key,
             ark_fallback_model=ark_model,

@@ -317,6 +317,16 @@ Authorization: Bearer <key>        # 必须带（写端点）
   本门对新增条目做 diff，转成 **`delta.reasoning_content`**（流式）/
   `response.reasoning_summary_text.delta`（Responses 流式）增量下发。思考全文仍不下发（上游只给摘要）。
 - 非流式应答的 `message` 无 reasoning 字段（上游不给）——要思考摘要请用流式。
+- 🔴 **思考泄漏模型自动降档**（2026-10-02 实测）：部分模型（默认名单 `qwen3.8-omni-flash`，
+  env `QWEN_THINKING_LEAK_MODELS` 覆盖）在 **auto / thinking 档把思考过程直接写进正文 `content`**
+  —— 不拆 `reasoning_content`、也没有 `</analysis>` 标记，调用方直接渲染会把思考当正文
+  （实测复现 3/3，含流式；同请求 `qwen3.7-plus` 流式**正确分离** ⇒ 模型侧行为，非本服务翻译 bug）。
+  本门处置：
+  - **缺省（auto）命中名单 ⇒ 自动切 fast**（`thinking_enabled:false` ⇒ 无思考、正文干净），
+    并在 `degradations` 写明降级理由（**不静默改语义**：降档事实对调用方可见）；
+  - 调用方**显式**声明 `reasoning_effort:"high"` ⇒ **照发不覆盖**（显式意图优先），
+    但同样写 `degradations` 告知"思考会并入正文、无 reasoning_content"；
+  - 名单可换也可关：改 env 即可，不必发版；**未设 env ⇒ 加固默认生效**，显式设为空串 ⇒ 关闭加固。
 - 🔴 **思考心跳**：思考期上游静默，流式应答在正文前先发一个**空格增量**变相解锁"首字"
   （用户方案）——流式正文会带一个前导空格（非流式不带；fast 档无心跳）。拼正文请 `strip` 或跳过首空格。
 

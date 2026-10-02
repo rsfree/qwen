@@ -707,3 +707,97 @@ def test_attachment_ssrf_guard(settings, fake_upstream):
     assert resp.status_code == 400
     message = resp.json()["error"]["message"]
     assert "非公网" in message or "无法解析" in message
+
+
+# ---------------------------------------------------------------- 思考泄漏加固
+# 🔴 2026-10-02 实测缺陷：qwen3.8-omni-flash 在 auto/thinking 档把思考过程写进正文
+# content（无 reasoning_content、无 </analysis>），复现 3/3 含流式；fast 档干净。
+# 同请求 qwen3.7-plus 流式正确分离 ⇒ 模型侧行为，非本层翻译 bug。
+
+LEAK_MODEL = "qwen3.8-omni-flash"
+
+
+def _gear_of(body: dict, **kw) -> str:
+    return openai_chat.parse_openai_chat_request(body, **kw).thinking_gear
+
+
+def test_thinking_leak_model_defaults_to_fast_gear():
+    """缺省（auto）命中泄漏名单 ⇒ 静默降 fast，且写明降级理由（不静默改语义）。"""
+    req = openai_chat.parse_openai_chat_request(
+        {"model": LEAK_MODEL, "messages": [{"role": "user", "content": "1+1等于几？只给数字"}]})
+    assert req.thinking_gear == "fast"
+    assert req.model == LEAK_MODEL, "只该动档位，模型名原样转发"
+    assert any(LEAK_MODEL in d and "快速档" in d for d in req.degradations), req.degradations
+
+
+def test_non_leak_model_keeps_auto_gear():
+    """🔴 反向：未登记的模型**不得**被降档（防"名单一失守就全量降档"的过度加固）。"""
+    assert _gear_of({"model": "qwen3.7-plus",
+                     "messages": [{"role": "user", "content": "x"}]}) == "auto"
+    assert _gear_of({"model": "qwen3.8-max",
+                     "messages": [{"role": "user", "content": "x"}]}) == "auto"
+
+
+def test_explicit_high_is_respected_but_warned():
+    """调用方显式声明 high ⇒ 照发不静默覆盖，但必须写 degradation 告知思考会并入正文。"""
+    req = openai_chat.parse_openai_chat_request(
+        {"model": LEAK_MODEL, "reasoning_effort": "high",
+         "messages": [{"role": "user", "content": "x"}]})
+    assert req.thinking_gear == "thinking", "显式意图优先，不静默改调用方语义"
+    assert any("reasoning_content" in d for d in req.degradations), req.degradations
+
+
+def test_explicit_none_stays_fast_without_extra_warning():
+    """显式 none 本来就是 fast ⇒ 不再叠加多余的泄漏告警（不刷屏）。"""
+    req = openai_chat.parse_openai_chat_request(
+        {"model": LEAK_MODEL, "reasoning_effort": "none",
+         "messages": [{"role": "user", "content": "x"}]})
+    assert req.thinking_gear == "fast"
+    assert not any(LEAK_MODEL in d for d in req.degradations), req.degradations
+
+
+def test_qwen_prefix_form_also_matched():
+    """调用方写 `qwen/` 前缀形态也要命中（parse 已剥离前缀 ⇒ 比裸名即可）。"""
+    assert _gear_of({"model": f"qwen/{LEAK_MODEL}",
+                     "messages": [{"role": "user", "content": "x"}]}) == "fast"
+
+
+def test_leak_list_is_overridable_and_can_be_disabled():
+    """名单可换（可关）：传空列表 ⇒ 完全恢复旧行为（上游修好后的回退开关）。"""
+    body = {"model": LEAK_MODEL, "messages": [{"role": "user", "content": "x"}]}
+    assert _gear_of(body, thinking_leak_models=[]) == "auto"
+    # 换名单：把 plus 登记进去 ⇒ 它降档，omni-flash 不再降
+    assert _gear_of({**body, "model": "qwen3.7-plus"},
+                    thinking_leak_models=["qwen3.7-plus"]) == "fast"
+
+
+def test_fast_gear_has_no_heartbeat_for_leak_model(client_app):
+    """端到端：泄漏模型缺省请求 ⇒ 上游收到 thinking_enabled false，且流式无心跳空格。"""
+    test_client, fake, _, _ = client_app
+    with test_client.stream("POST", CHAT_PATH,
+                            json={"model": LEAK_MODEL,
+                                  "messages": [{"role": "user", "content": "你好"}],
+                                  "stream": True},
+                            headers=AUTH_A) as resp:
+        assert resp.status_code == 200
+        raw = "".join(resp.iter_text())
+    events = [json.loads(line[len("data:"):]) for line in raw.splitlines()
+              if line.startswith("data:") and line != "data: [DONE]"]
+    texts = [e["choices"][0]["delta"].get("content", "") for e in events if e.get("choices")]
+    assert " " not in texts[:1], "fast 档不该发心跳空格"
+    assert any(LEAK_MODEL in (e.get("degradations") or [""])[0] or
+               any(LEAK_MODEL in x for x in (e.get("degradations") or []))
+               for e in events), "降级说明须随流式首片下发"
+    fc = fake.bodies("/api/v2/chat/completions")[0]["messages"][0]["feature_config"]
+    assert fc["thinking_enabled"] is False and fc["thinking_mode"] == "Fast"
+
+
+def test_leak_guard_survives_config_default():
+    """🔴 变异证明：加固真在链路上（不是死代码）—— 关掉名单即失效、默认即生效。"""
+    from app.config import Settings
+    assert LEAK_MODEL in Settings().thinking_leak_models, "默认名单必须含实测缺陷模型"
+    assert Settings.from_env({}).thinking_leak_models, "未设 env ⇒ 加固默认生效"
+    assert Settings.from_env({"QWEN_THINKING_LEAK_MODELS": ""}).thinking_leak_models == [], \
+        "显式空串 ⇒ 刻意关闭加固"
+    assert Settings.from_env({"QWEN_THINKING_LEAK_MODELS": "a , b"}).thinking_leak_models \
+        == ["a", "b"], "逗号分隔 + 去空格"
