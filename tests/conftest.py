@@ -242,10 +242,10 @@ def _access_token(uid: str) -> str:
                      "exp": time.time() + 365 * 86400, "iat": time.time()})
 
 
-#: 两个不同 uid ⇒ 两个不同指纹（"跨 Key 读 ⇒ 404" 用例靠它区分属主）。
-#: 2026-10-13 起鉴权**只认 qwen access_token**（静态白名单已删除），凭据必须是 JWT 形状。
-AUTH_A = {"Authorization": f"Bearer {_access_token('user-a')}"}
-AUTH_B = {"Authorization": f"Bearer {_access_token('user-b')}"}
+#: 形态① **账号串**（`邮箱|口令`）：白名单已删 ⇒ **形状合规即收**，无需登记。
+#: 用夹具里真实存在的两个账号，保证「两个不同凭据 ⇒ 两个不同属主指纹」的语义不变。
+AUTH_A = {"Authorization": "Bearer a@x.cn|pw-a"}
+AUTH_B = {"Authorization": "Bearer b@x.cn|pw-b"}
 TASKS_PATH = "/api/v3/contents/generations/tasks"
 CHAT_PATH = "/v1/chat/completions"
 

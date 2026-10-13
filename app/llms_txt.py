@@ -113,8 +113,9 @@ def render_llms_txt(settings: Settings, chat_models: list[str] | None = None) ->
     lines.append("| `GET /api/v3/contents/generations/tasks/{id}` | 允许无 Key | 视频·查询（id 即凭据） |")
     lines.append("| `GET /healthz` `/readyz` | 免 | 探活（`/stats` 建议反代层封禁） |")
     lines.append("")
-    lines.append("鉴权：`Authorization: Bearer <qwen access_token>` —— 服务只认**活的** "
-                 "access token（不验签、不维护白名单）。")
+    lines.append("鉴权：`Authorization: Bearer <凭据>`，两种形态 —— "
+                 "① `邮箱|口令` 账号串（**形状合规即收**，不查白名单）；"
+                 "② qwen access token（不验签）。均不校验真实性。")
     lines.append("")
     lines.append("## 回退通道")
     lines.append("")
@@ -180,7 +181,7 @@ border-radius:4px}} a{{color:#0a66d0}}</style></head>
 <ul>
   <li>视频能力：<code>{esc(video['id'])}</code>（{esc('/'.join(video['ratios']))}，时长 ~{video['duration_s']}s）</li>
   <li>chat 模型：已注册 {n_chat} 个（见 <a href="/v1/models">/v1/models</a>）</li>
-  <li>鉴权：Bearer qwen access_token（不验签）</li>
+  <li>鉴权：Bearer 账号串（邮箱|口令）或 qwen access token</li>
   <li>回退通道：{esc(fallback_line)}</li>
 </ul>
 <p>给 LLM/Agent 读的完整契约：<a href="/llms.txt">/llms.txt</a> ·

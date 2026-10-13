@@ -90,8 +90,8 @@ def test_fallback_auth_upload_lines_reflect_settings():
     # 鉴权行（端点节内）
     ep_on = on.split("## 端点")[1].split("\n## ")[0]
     ep_off = off.split("## 端点")[1].split("\n## ")[0]
-    # 白名单已删除（2026-10-13）⇒ 两态都必须是 access_token 说明
-    assert "qwen access_token" in ep_on and "qwen access_token" in ep_off
+    # 白名单已删除（2026-10-13）⇒ 两态都说明「账号串 + access token」两种形态
+    assert "账号串" in ep_on and "账号串" in ep_off
     # 版本号
     assert f"v{__version__}" in on and f"v{__version__}" in off
 

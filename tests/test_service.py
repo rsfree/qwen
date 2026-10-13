@@ -122,6 +122,16 @@ def test_unknown_key_is_401(client_app):
     assert resp.status_code == 401
 
 
+# ---------------------------------------------- 形态①：账号串（白名单已删）
+
+def test_account_pair_accepted_without_whitelist(client_app):
+    """账号串形态：白名单（逐字查表）已删除 ⇒ **任何形状合规的 `邮箱|口令` 都受理**。"""
+    tc, *_ = client_app
+    resp = tc.post(TASKS_PATH, json=T2V_BODY,
+                   headers={"Authorization": "Bearer other@x.cn|pw-xyz"})
+    assert resp.status_code == 200
+    assert resp.json()["id"].startswith("cgt-")
+
 # ---------------------------------------------- 第三形态：JWT 门卡（2026-10-01）
 
 

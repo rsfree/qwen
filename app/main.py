@@ -72,6 +72,19 @@ def bind_pool_state(store: TaskStore, pool: AccountPool) -> None:
         POOL_STATE_KEY, json.dumps(pool.snapshot(), ensure_ascii=False))
 
 
+def looks_like_account_pair(key: str) -> bool:
+    """调用方凭据形态① `<email>|<password>` 的**形状判定**。
+
+    2026-10-13 用户口径：白名单（`API_KEYS` 逐字比对）整体删除 ⇒ **不再查表**，
+    任何 qwen 账号的 `邮箱|口令` 都直接受理，不需要运营方登记。
+    这里只挡「明显不是账号串」的填错（例如把 `sk-…` 误填进来），**不做真实性校验**。
+    """
+    left, sep, right = str(key or "").partition("|")
+    if not sep or not right.strip() or "@" not in left:
+        return False
+    return not any(ch.isspace() for ch in key)
+
+
 def create_app(settings: Settings | None = None, *, store: TaskStore | None = None,
                pool: AccountPool | None = None, client: QwenClient | None = None,
                service: QwenVideoService | None = None,
@@ -127,21 +140,19 @@ def create_app(settings: Settings | None = None, *, store: TaskStore | None = No
                             content=exc.to_body(request_id), headers=headers)
 
     def _key_accepted(key: str) -> bool:
-        """调用方凭据 = **qwen access_token**（JWT 门卡）。
+        """调用方凭据 —— **两种形态**（白名单已删，形态不变）：
 
-        2026-10-13 用户口径：**删除静态白名单**（原 `API_KEYS` 逐字比对）——
-        鉴权全部交给 token 管理：形状 + `type=access_token` + `exp` 未过期即认
-        （**不验签**：签名校验只有上游能做，这里只做「是不是一份活的 access token」
-        的形状闸门）。透传账号语义：门卡证明「你有一个活的 qwen 登录态」，
-        上游凭据仍由账号池托管。
+          ① **账号串** `<email>|<password>`：**形状合规即收** —— 不再查白名单，
+             任何 qwen 账号直接可用，无需运营方登记；
+          ② **JWT 门卡** `eyJ…`：形状 + `type=access_token` + `exp` 未过期
+             （**不验签**：签名校验只有上游能做，这里只做形状闸门）。
 
-        归属注意：access token 15 分钟一换，换新后指纹随之改变 ⇒ 用它建的任务，
-        旧 token 过期后不可再读（读单条任务不带 Authorization 仍放行，
-        见 `credential_id_optional`）。
-
-        🔴 部署方注意：本门**不校验 token 归属**，任何持有活 qwen 登录态的人都能进
-        ⇒ 对外暴露时必须用外部手段（反代 IP 白名单 / WAF / 网关）约束调用面。
+        ⚠️ 两种形态都**不校验真实性**（账号串不验证、JWT 不验签）⇒ 本门只拦
+        「形状明显不对的配置错误」，不是身份证明。对外暴露必须靠外部手段
+        （反代 IP 白名单 / WAF / 网关鉴权）约束调用面。
         """
+        if looks_like_account_pair(key):
+            return True
         payload = jwt_payload(key)
         if payload is None:
             return False
