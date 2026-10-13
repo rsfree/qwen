@@ -184,12 +184,12 @@ jobs:
           VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
+          SMOKE_JWT=$(python3 scripts/make_jwt.py)
           # 🔴 冒烟**不带任何真实凭据**：账号池为空 + 上游指向死端口 ——
           #    一旦有代码路径试图联网，会以连接失败/502 现形。
           docker run -d --name smoke \
             -p 18400:8400 \
             -e QWEN_BASE_URL='http://127.0.0.1:9' \
-            -e API_KEYS='sk-smoke' \
             -e TASK_DB='sqlite:////app/var/smoke.db' \
             -e COORDINATOR_ENABLED=0 \
             "$IMAGE:$VERSION"
@@ -206,7 +206,7 @@ jobs:
           python3 -c "import json;d=json.load(open('/tmp/ready.json'));assert d['accounts']==0 and d['store']=='ok',d"
           # dry-run：零成本预演可跑（不提交、不落库）
           curl -sf -X POST http://127.0.0.1:18400/api/v3/contents/generations/tasks \
-            -H "Authorization: Bearer sk-smoke" -H 'X-Avm-Dry-Run: 1' \
+            -H "Authorization: Bearer $SMOKE_JWT" -H 'X-Avm-Dry-Run: 1' \
             -H 'Content-Type: application/json' \
             -d '{"model":"qwen/video","content":[{"type":"text","text":"smoke"}],"ratio":"16:9"}' \
             | tee /tmp/dry.json; echo
@@ -218,7 +218,7 @@ jobs:
             -d '{"model":"qwen/video","content":[{"type":"text","text":"smoke"}]}')" = "401"
           # 部署闸门：带 key 但账号池为空 ⇒ 503 CredentialUnavailable（发出上游之前拒绝）
           curl -s -X POST http://127.0.0.1:18400/api/v3/contents/generations/tasks \
-            -H "Authorization: Bearer sk-smoke" -H 'Content-Type: application/json' \
+            -H "Authorization: Bearer $SMOKE_JWT" -H 'Content-Type: application/json' \
             -d '{"model":"qwen/video","content":[{"type":"text","text":"smoke"}]}' \
             | tee /tmp/accept.json; echo
           python3 -c "import json;d=json.load(open('/tmp/accept.json'));assert d['error']['code']=='CredentialUnavailable',d"

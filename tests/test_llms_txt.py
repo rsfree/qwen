@@ -70,9 +70,9 @@ def test_error_table_derived_from_exceptions():
 
 def test_fallback_auth_upload_lines_reflect_settings():
     """回退 / 鉴权 / 上传 三行随配置联动（防止两套文案都说满）。"""
-    s_on = Settings(api_keys=["sk"], ark_fallback_key="k", ark_fallback_model="m",
+    s_on = Settings(ark_fallback_key="k", ark_fallback_model="m",
                     upload_enabled=True)
-    s_off = Settings()   # 无 Key、无回退；upload 默认 True → 单独关一次
+    s_off = Settings()   # 无回退；upload 默认 True → 单独关一次
     s_no_upload = Settings(upload_enabled=False)
     on = llms_txt.render_llms_txt(s_on, ["qwen3.7-plus"])
     off = llms_txt.render_llms_txt(s_off, [])
@@ -90,8 +90,8 @@ def test_fallback_auth_upload_lines_reflect_settings():
     # 鉴权行（端点节内）
     ep_on = on.split("## 端点")[1].split("\n## ")[0]
     ep_off = off.split("## 端点")[1].split("\n## ")[0]
-    assert "1 个 Key" in ep_on
-    assert "未启用" in ep_off
+    # 白名单已删除（2026-10-13）⇒ 两态都必须是 access_token 说明
+    assert "qwen access_token" in ep_on and "qwen access_token" in ep_off
     # 版本号
     assert f"v{__version__}" in on and f"v{__version__}" in off
 
@@ -99,9 +99,9 @@ def test_fallback_auth_upload_lines_reflect_settings():
 def test_no_fallback_model_leak():
     """🔴 脱敏纪律：回退模型名/Key 不得出现在 /llms.txt。"""
     s = Settings(ark_fallback_key="ark-secret-xyz", ark_fallback_model="doubao-secret-model",
-                 ark_fallback_models=["alt-secret-model"], api_keys=["sk-real"])
+                 ark_fallback_models=["alt-secret-model"])
     body = llms_txt.render_llms_txt(s, ["qwen3.7-plus"])
-    for secret in ("doubao-secret-model", "alt-secret-model", "ark-secret-xyz", "sk-real"):
+    for secret in ("doubao-secret-model", "alt-secret-model", "ark-secret-xyz"):
         assert secret not in body, f"🔴 泄漏：{secret}"
 
 

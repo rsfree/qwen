@@ -5,7 +5,9 @@
 """
 from __future__ import annotations
 
+import base64
 import json
+import time
 
 import httpx
 import pytest
@@ -189,7 +191,6 @@ def settings(tmp_path) -> Settings:
         accounts={"a@x.cn": "pw-a", "b@x.cn": "pw-b"},
         task_db=f"sqlite:///{tmp_path}/qwen.db",
         data_dir=str(tmp_path),
-        api_keys=["sk-a", "sk-b"],
         key_secret="secret-for-tests",
         signin_proxy="http://127.0.0.1:9",  # 不会被真的使用（mint 已注入）
         signin_min_interval=0.0,
@@ -228,8 +229,23 @@ def client_app(settings, fake_upstream):
         yield test_client, fake_upstream, store, settings
 
 
-AUTH_A = {"Authorization": "Bearer sk-a"}
-AUTH_B = {"Authorization": "Bearer sk-b"}
+def make_jwt(payload: dict) -> str:
+    """最小 JWT 形状（header.payload.signature）—— 本服务只读载荷、**不验签**。"""
+    b64 = lambda o: base64.urlsafe_b64encode(  # noqa: E731
+        json.dumps(o).encode()).rstrip(b"=").decode()
+    return (f"{b64({'alg': 'HS256', 'kid': 'legacy', 'typ': 'JWT'})}."
+            f"{b64(payload)}.sig")
+
+
+def _access_token(uid: str) -> str:
+    return make_jwt({"id": uid, "type": "access_token",
+                     "exp": time.time() + 365 * 86400, "iat": time.time()})
+
+
+#: 两个不同 uid ⇒ 两个不同指纹（"跨 Key 读 ⇒ 404" 用例靠它区分属主）。
+#: 2026-10-13 起鉴权**只认 qwen access_token**（静态白名单已删除），凭据必须是 JWT 形状。
+AUTH_A = {"Authorization": f"Bearer {_access_token('user-a')}"}
+AUTH_B = {"Authorization": f"Bearer {_access_token('user-b')}"}
 TASKS_PATH = "/api/v3/contents/generations/tasks"
 CHAT_PATH = "/v1/chat/completions"
 

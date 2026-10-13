@@ -32,18 +32,20 @@
 
 ## 1. 鉴权
 
-- `Authorization: Bearer <API Key>`；**未配置 `API_KEYS` 时鉴权关闭**（仅限内网部署，显式声明）。
-- **Key 的三种形态**（2026-10-01 起，"是什么"按形状自动判别）：
+- `Authorization: Bearer <qwen access_token>`；**写端点必须带**（缺失/无效 ⇒ 401）。
+- **唯一形态：JWT 门卡**（2026-10-13 起；原 `API_KEYS` 静态白名单**已删除**）：
 
   | 形态 | 长相 | 接受判据 |
   |---|---|---|
-  | ① 静态 Key | `sk-qwen-…`（运营方登记在 `API_KEYS` 的任意串） | 白名单逐字比对 |
-  | ② 账号串 | `<email>\|<password>`（同上，白名单里的不透明字符串） | 白名单逐字比对 |
-  | ③ **JWT 门卡** | `eyJ…`（调用方**自己的** qwen access token） | 形状 + `type=access_token` + `exp` 未过期（**不验签**） |
+  | **JWT 门卡** | `eyJ…`（调用方**自己的** qwen access token） | 形状 + `type=access_token` + `exp` 未过期（**不验签**） |
 
-  ③ 的语义是**透传账号门卡**："你有一个活的 qwen 登录态"即可进门；上游凭据仍由账号池托管。
-  ⚠️ access token **15 分钟**一换，换新后指纹随之改变 ⇒ 用 JWT 建的任务，**旧 JWT 过期后
-  不可再读**（要持久归属请用 ①/②）。`refresh_token` 形态**不收**（只认活会话，不收长期凭据）。
+  语义 = **透传账号门卡**："你有一个活的 qwen 登录态"即可进门；上游凭据仍由账号池托管。
+  ⚠️ access token **15 分钟**一换，换新后指纹随之改变 ⇒ 用它建的任务，**旧 token 过期后
+  不可再读**（读单条任务不带 Authorization 仍放行，见下表）。`refresh_token` 形态**不收**
+  （只认活会话，不收长期凭据 —— 30 天的凭据一旦泄漏，窗口是 access token 的 2880 倍）。
+  🔴 **删除白名单的代价（部署方须知）**：本门**不验签、也不校验 token 归属** ⇒ 任何持有活
+  qwen 登录态的人都能调用。对外暴露时**必须**用外部手段（反代 IP 白名单 / WAF / 网关鉴权）
+  约束调用面，否则账号池额度会对全网敞开。
 
 - 🔴 **写端点必须带 Key；读不强制**（2026-09-22 修订，同 `../jimeng` 口径）：
 
@@ -512,7 +514,6 @@ Authorization: Bearer <key>        # 必须带（写端点）
 | `QUEUE_MAX_DEPTH` | `50` | 排队深度上限（超限 ⇒ 429 背压） |
 | `SUBMIT_MAX_ATTEMPTS` | `5` | 单任务最大提交尝试次数（超限 ⇒ `failed`，明示未消耗额度） |
 | `QUEUE_RETRY_BASE` | `30` | 排队重试退避基数（秒，指数退避，上限 600s） |
-| `API_KEYS` | 空 | 对外 Key（逗号分隔）；空 = 关闭鉴权（仅内网） |
 | `TASK_DB` | `sqlite:///<DATA_DIR>/qwen.db` | 任务库（多实例请换 PostgreSQL） |
 | `TASK_TIMEOUT` | `900` | 未终态任务的超时阈值（→ `expired`；排队中的任务同样受此闸门） |
 | `TASK_RETENTION_DAYS` | `7` | 记录保留期（契约要求 ≥7 天） |

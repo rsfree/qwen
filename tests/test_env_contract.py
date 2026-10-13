@@ -51,7 +51,6 @@ KEY_TO_FIELD: dict[str, str | None] = {
     "QUEUE_MAX_DEPTH": "queue_max_depth",
     "SUBMIT_MAX_ATTEMPTS": "submit_max_attempts",
     "QUEUE_RETRY_BASE": "queue_retry_base",
-    "API_KEYS": "api_keys",
     "KEY_SECRET": "key_secret",
     "MODELS_CACHE_TTL": "models_cache_ttl",
     "QWEN_THINKING_LEAK_MODELS": "thinking_leak_models",
@@ -233,10 +232,9 @@ def test_active_value_diffs_are_documented_and_not_stale():
         assert len(reason) >= 8, f"{key} 的差异理由太短，等于没写"
 
 
-def test_api_keys_placeholder_does_not_look_like_a_credential():
+def test_credential_placeholders_do_not_look_real():
     """模板里的凭据类项必须是**空**或**显眼占位**：非空的像真凭据会被当成真凭据（噪音/401）。"""
     active, _ = parse_template()
-    assert active.get("API_KEYS", "") == "", "API_KEYS 模板值必须留空"
     assert active.get("QWEN_ACCOUNT_PASSWORD", "") == "", "口令模板值必须留空"
     proxy = active.get("QWEN_SIGNIN_PROXY", "")
     assert "POOL_USER" in proxy, "出口模板值必须是显眼占位符（POOL_USER:POOL_PASS@…）"

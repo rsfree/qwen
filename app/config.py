@@ -151,7 +151,6 @@ class Settings:
     queue_retry_base: float = 30.0
 
     # —— 对外鉴权 ——
-    api_keys: list[str] = field(default_factory=list)
     key_secret: str = ""
 
     # —— OpenAI chat 门（/v1/chat/completions + /v1/models 注册） ——
@@ -233,7 +232,6 @@ class Settings:
             queue_max_depth=_int(env, "QUEUE_MAX_DEPTH", 50),
             submit_max_attempts=_int(env, "SUBMIT_MAX_ATTEMPTS", 5),
             queue_retry_base=_num(env, "QUEUE_RETRY_BASE", 30.0),
-            api_keys=[p.strip() for p in _env(env, "API_KEYS").split(",") if p.strip()],
             key_secret=_env(env, "KEY_SECRET"),
             models_cache_ttl=_num(env, "MODELS_CACHE_TTL", 300.0),
             thinking_leak_models=_leak_models(env),

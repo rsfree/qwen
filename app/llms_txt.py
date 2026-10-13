@@ -39,7 +39,6 @@ def render_llms_txt(settings: Settings, chat_models: list[str] | None = None) ->
     chat_models = list(chat_models or [])
     video = catalog()[0]
     fallback_on = settings.ark_fallback_enabled
-    auth_on = bool(settings.api_keys)
     upload_on = settings.upload_enabled
     max_mb = int(settings.upload_max_bytes // 1_000_000)
 
@@ -114,9 +113,8 @@ def render_llms_txt(settings: Settings, chat_models: list[str] | None = None) ->
     lines.append("| `GET /api/v3/contents/generations/tasks/{id}` | 允许无 Key | 视频·查询（id 即凭据） |")
     lines.append("| `GET /healthz` `/readyz` | 免 | 探活（`/stats` 建议反代层封禁） |")
     lines.append("")
-    auth_line = (f"已启用（{len(settings.api_keys)} 个 Key）" if auth_on
-                 else "**未启用**（仅限内网部署；公网务必配置 `API_KEYS`）")
-    lines.append(f"鉴权：`Authorization: Bearer <Key>`，当前部署 {auth_line}。")
+    lines.append("鉴权：`Authorization: Bearer <qwen access_token>` —— 服务只认**活的** "
+                 "access token（不验签、不维护白名单）。")
     lines.append("")
     lines.append("## 回退通道")
     lines.append("")
@@ -165,7 +163,6 @@ def render_landing(settings: Settings, chat_models: list[str] | None = None) -> 
     chat_models = list(chat_models or [])
     n_chat = len(chat_models)
     video = catalog()[0]
-    auth_line = "已启用" if settings.api_keys else "未启用（仅限内网）"
     fallback_line = "已启用（能力不足自动转方舟）" if settings.ark_fallback_enabled else "未配置"
     esc = html.escape
     return f"""<!doctype html>
@@ -183,7 +180,7 @@ border-radius:4px}} a{{color:#0a66d0}}</style></head>
 <ul>
   <li>视频能力：<code>{esc(video['id'])}</code>（{esc('/'.join(video['ratios']))}，时长 ~{video['duration_s']}s）</li>
   <li>chat 模型：已注册 {n_chat} 个（见 <a href="/v1/models">/v1/models</a>）</li>
-  <li>鉴权：Bearer Key（{esc(auth_line)}）</li>
+  <li>鉴权：Bearer qwen access_token（不验签）</li>
   <li>回退通道：{esc(fallback_line)}</li>
 </ul>
 <p>给 LLM/Agent 读的完整契约：<a href="/llms.txt">/llms.txt</a> ·

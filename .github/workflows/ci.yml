@@ -66,7 +66,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       QWEN_BASE_URL: "http://127.0.0.1:9"
-      API_KEYS: "sk-smoke"
       TASK_DB: "sqlite:///./smoke.db"
       COORDINATOR_ENABLED: "0"
       PORT: "8400"
@@ -79,6 +78,7 @@ jobs:
       - name: 起服务并验两条闸门
         run: |
           set -euo pipefail
+          SMOKE_JWT=$(python scripts/make_jwt.py)
           gunicorn -c gunicorn_conf.py "app.main:create_app()" &
           for i in $(seq 1 30); do
             if curl -sf http://127.0.0.1:8400/healthz > /dev/null; then break; fi
@@ -91,7 +91,7 @@ jobs:
           python -c "import json;d=json.load(open('/tmp/ready.json'));assert d['accounts']==0 and d['store']=='ok',d"
           # dry-run：零成本预演可跑（不提交、不落库）
           curl -sf -X POST http://127.0.0.1:8400/api/v3/contents/generations/tasks \
-            -H "Authorization: Bearer sk-smoke" -H 'X-Avm-Dry-Run: 1' \
+            -H "Authorization: Bearer $SMOKE_JWT" -H 'X-Avm-Dry-Run: 1' \
             -H 'Content-Type: application/json' \
             -d '{"model":"qwen/video","content":[{"type":"text","text":"smoke"}],"ratio":"16:9"}' \
             | tee /tmp/dry.json; echo
@@ -104,7 +104,7 @@ jobs:
           # 部署闸门：带 key 但账号池为空 ⇒ 503 CredentialUnavailable
           # （拒绝发生在**发出上游请求之前**；死端口保证"真发了"会以别的形态炸出来）
           curl -s -X POST http://127.0.0.1:8400/api/v3/contents/generations/tasks \
-            -H "Authorization: Bearer sk-smoke" -H 'Content-Type: application/json' \
+            -H "Authorization: Bearer $SMOKE_JWT" -H 'Content-Type: application/json' \
             -d '{"model":"qwen/video","content":[{"type":"text","text":"smoke"}]}' \
             | tee /tmp/accept.json; echo
           python -c "import json;d=json.load(open('/tmp/accept.json'));assert d['error']['code']=='CredentialUnavailable',d"

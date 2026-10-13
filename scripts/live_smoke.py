@@ -212,7 +212,7 @@ def main(argv=None) -> int:
     p_chat.add_argument("--prompt", default=PROMPT_CHAT)
     p_chat.add_argument("--model", default="", help="默认 qwen3.7-plus（也可用 /v1/models 里注册的任一 chat 模型）")
     p_chat.add_argument("--stream", action="store_true", help="走流式（观察 SSE 增量）")
-    p_chat.add_argument("--key", default="", help="服务 API Key（服务开了 API_KEYS 时必填）")
+    p_chat.add_argument("--key", default="", help="调用方凭据 = qwen access_token（见 INTERFACE §1；可用 scripts/make_jwt.py 造）")
     p_chat.add_argument("--base", default="http://127.0.0.1:8400")
     p_chat.set_defaults(func=cmd_chat)
 
