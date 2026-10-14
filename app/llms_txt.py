@@ -87,7 +87,7 @@ def render_llms_txt(settings: Settings, chat_models: list[str] | None = None) ->
                  "`enable_thinking:false`；流式思考期发空格心跳变相加速首字（正文前导一个空格）。")
     lines.append("注意：少数模型（如 `qwen3.8-omni-flash`）在自动/强制思考档会把思考过程并入正文 `content`"
                  "（无 `reasoning_content` 字段）——本服务对这类模型**缺省自动切快速档**保证正文干净；"
-                 "显式传 `reasoning_effort:\"high\"` 则照发并在 `degradations` 告警。")
+                 "显式传 `reasoning_effort:\"high\"` 则照发（风险只记服务端日志）。")
     lines.append("")
     lines.append("### 附件解析（chat 门）")
     lines.append("")
@@ -123,10 +123,10 @@ def render_llms_txt(settings: Settings, chat_models: list[str] | None = None) ->
         lines.append("**已启用**：对话门遇到 qwen 做不了的能力（`tools` 函数调用、"
                      "文件/音频/视频附件、多图、data: 图片）时，**整单转方舟 chat/responses "
                      "原生执行**——函数调用与内置搜索真实生效。应答 `model` 字段回显请求值、"
-                     "带 `x-qwen-fallback: ark` 头与 `degradations` 说明；"
+                     "带 `x-qwen-fallback: ark` 头；"
                      "回退模型名全链路脱敏（含报错报文）。回退通道故障 ⇒ 502，不静默降回。")
     else:
-        lines.append("**未配置**：`tools` 会被忽略并写入 `degradations`（上游实测不支持函数调用）；"
+        lines.append("**未配置**：`tools` 会被忽略（上游实测不支持函数调用；降级事实只记服务端日志）；"
                      "文件/音频/视频附件 ⇒ 400（除非启用附件上传链）；data: 图片 ⇒ 400。"
                      "启用方式：配置 `ARK_FALLBACK_KEY` + `ARK_FALLBACK_MODEL`。")
     lines.append("")

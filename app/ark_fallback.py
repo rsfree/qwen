@@ -14,8 +14,8 @@
     多轮对话由方舟原生消化 —— 没有拍平降级）；
   · 🔴 **回退模型名对调用方全链路脱敏**（2026-09-24 用户指令）：
     应答 `model` 改写为调用方请求的模型；流式 chunk 逐条清洗；报错报文清洗
-    （完整原文只进服务端日志）；回退事实仍通过 `degradations` 说明 + `x-qwen-fallback: ark`
-    响应头披露（说走了通道，不泄哪个模型）。
+    （完整原文只进服务端日志）；回退事实只由 `x-qwen-fallback: ark` 响应头披露
+    （说走了通道，不泄哪个模型；2026-10-14 起不再写 `degradations`）。
   · **模型级 failover**（2026-09-24 用户指令「429 可以用下 doubao-seed-2-1-turbo」→
     升级为**多模型链**「兜底模型支持多模型配置」）：主回退模型被方舟限流（429）⇒
     按 `ARK_FALLBACK_MODELS`（逗号分隔）依次切换重试；全部被限 ⇒ 429 原样转发。
@@ -234,9 +234,9 @@ def _open_stream(settings: Settings, path: str, payload: dict, *, channel: str,
     return client, resp
 
 
-def chat(settings: Settings, body: dict, reason: str, *,
+def chat(settings: Settings, body: dict, *,
          transport: httpx.BaseTransport | None = None) -> dict:
-    """非流式回退：方舟应答 → `model` 改写为调用方请求值 + `degradations` 回退说明。"""
+    """非流式回退：方舟应答 → `model` 改写为调用方请求值（回退事实走 `x-qwen-fallback` 头）。"""
     resp = _post_with_failover(settings, "/chat/completions", body,
                                channel="方舟 chat", transport=transport)
     _raise_http(resp, settings, "方舟 chat")
@@ -247,9 +247,6 @@ def chat(settings: Settings, body: dict, reason: str, *,
     if not isinstance(data, dict):
         raise UpstreamError("回退通道（方舟 chat）响应形态异常（非 JSON 对象）")
     _scrub_model(data, _requested_model(body))
-    notes = data.get("degradations") if isinstance(data.get("degradations"), list) else []
-    data["degradations"] = [*notes,
-                            f"本次由回退通道应答（方舟）：qwen 上游不支持{reason}"]
     return data
 
 
@@ -301,9 +298,9 @@ def responses_fallback_reason(body: dict) -> str | None:
     return state_reason or fallback_reason(chat_body)
 
 
-def responses(settings: Settings, body: dict, reason: str, *,
+def responses(settings: Settings, body: dict, *,
               transport: httpx.BaseTransport | None = None) -> dict:
-    """非流式回退（方舟 `/responses`，原生支持 tools/web_search）：model 改写 + 说明。"""
+    """非流式回退（方舟 `/responses`，原生支持 tools/web_search）：model 改写（脱敏）。"""
     resp = _post_with_failover(settings, "/responses", body,
                                channel="方舟 responses", transport=transport)
     _raise_http(resp, settings, "方舟 responses")
@@ -314,9 +311,6 @@ def responses(settings: Settings, body: dict, reason: str, *,
     if not isinstance(data, dict):
         raise UpstreamError("回退通道（方舟 responses）响应形态异常（非 JSON 对象）")
     _scrub_model(data, _requested_model(body))
-    notes = data.get("degradations") if isinstance(data.get("degradations"), list) else []
-    data["degradations"] = [*notes,
-                            f"本次由回退通道应答（方舟）：qwen 上游不支持{reason}"]
     return data
 
 

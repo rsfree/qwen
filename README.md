@@ -95,10 +95,10 @@ curl -s localhost:8400/v1/chat/completions \
 ## 2. 冻结决策（2026-09-22；chat 门 2026-09-24 增补）
 
 1. **范围 = 创建 + 查询两个核心端点**；列表 / DELETE **刻意不实现**（路由不存在，
-   不返回空列表之类的假数据）。回调 v1 不实现（`callback_url` 进 `degradations`）。
+   不返回空列表之类的假数据）。回调 v1 不实现（`callback_url` 只记服务端日志）。
 2. **创建响应逐字 `{"id": …}`**；查询响应 = 白名单 ∧ 有真值：
    不出现 `resolution` / `seed` / `usage` 等（不编"看起来合理"的常量）；
-   `degradations` 是**加性扩展**（仅非空时出现）。
+   降级说明**不下发**（只进服务端日志；2026-10-14 用户口径）。
 3. **容量语义 = 3 次/天/账号（UTC 日，t2v+i2v 共用）** ⇒ 账号池按 UTC 日计数 + 冷却 +
    提交节奏（`QWEN_SUBMIT_MIN_INTERVAL`）。真实天花板 = 账号数 × 3。
 4. **凭据 = 登录态最小凭据**（`Cookie: token=<JWT>`），signin **必须走轮换出口**；
@@ -115,12 +115,12 @@ curl -s localhost:8400/v1/chat/completions \
    （视频走方舟门）；文件/音频/视频解析**明确 400**（外链附件上游实测拒绝，U-15）；
    **必须带 Key**；**无排队**（同步链路，容量不足直接 429 背压）；**不消耗视频额度**
    （独立取号通道，但同账号提交节奏照守）；多轮/system 请求**拍平**成单条 prompt（写降级）；
-   上游 `usage` 真实透传（缺键不出）；流内 error 事件响亮失败。
+   上游 `usage` 真实透传（缺键不出）；流内 error 事件响亮失败；降级说明只记服务端日志。
 9. **能力回退通道（2026-09-24）**：请求点了 qwen 给不了的能力（`tools`、文件/音频/视频分段、
    多图、data: 图片、Responses 工具状态项）⇒ **整单转方舟 chat/responses 应答**
    （函数调用/内置搜索真实生效）。🔴 **回退模型名全链路脱敏**：应答 `model` 回显请求值、
    流式/报错/dry-run 一并清洗（`<redacted-model>`），完整原文只进服务端日志；
-   回退事实经 `x-qwen-fallback` 头 + degradations 披露。
+   回退事实经 `x-qwen-fallback` 头披露（不再写 degradations）。
    配置 `ARK_FALLBACK_KEY`+`ARK_FALLBACK_MODEL` 才启用；通道故障 ⇒ 502，**不静默降回 qwen**
    （`docs/INTERFACE.md` §10）。
 
@@ -171,7 +171,7 @@ curl -s localhost:8400/v1/chat/completions \
 - 镜像：CI 构建 + **推送前容器冒烟** + 推 GHCR（`ghcr.io/aicatfire/qwen`，版本/`latest`/`sha-` 三 tag）；
   **chat 门尚未部署**（需重新就地构建发版）。
 - `rehost`（产物转存）未实现（上游 URL 实测可直下，先透传）。
-- 严格 SDK 客户端若对 `degradations` 扩展报错，需要响应裁剪开关（未实现）。
+- 降级说明**不下发**（2026-10-14 用户口径）：响应与上游/方舟原生逐字段一致，严格 SDK 的 unknown-field 报错问题随之消失；可观测性移到服务端日志。
 
 ## 5. 相关技能
 

@@ -504,14 +504,14 @@ data: {"choices":[{"delta":{"role":"assistant","content":"","phase":"web_search"
 |---|---|---|---|
 | D-1 | `duration` 2–12…/`-1` 自选 | **不存在该参数，固定 ~5s** | 允许集 = {5}；>5 向下吸附 + 告警；<5 **400**；`-1` 替换成 5 + 告警 |
 | D-2 | `ratio` 支持 `adaptive` | 只吃 5 个枚举值 | 🔴 枚举外（含 `adaptive` / 缺失 / 写错）**一律落 1:1 + 告警**（用户 2026-09-17 冻结口径，刻意偏离"缺省 16:9"） |
-| D-3 | `resolution` 1080p/720p/4k | 不可指定 | 进 `degradations`；**不回填** |
-| D-4/D-5/D-6 | `seed` / `watermark` / `generate_audio` | 不支持 | `degradations`（`seed=-1` 视为"没给"，不报） |
-| D-7 | `camera_fixed` / `frames` / `service_tier` / `draft` / `return_last_frame` | 不支持 | `degradations`（`return_last_frame` 另注明"连续拼接链路会断"） |
+| D-3 | `resolution` 1080p/720p/4k | 不可指定 | 记服务端日志；**不回填** |
+| D-4/D-5/D-6 | `seed` / `watermark` / `generate_audio` | 不支持 | 服务端日志（`seed=-1` 视为"没给"，不报） |
+| D-7 | `camera_fixed` / `frames` / `service_tier` / `draft` / `return_last_frame` | 不支持 | 服务端日志（`return_last_frame` 另注明"连续拼接链路会断"） |
 | D-8 | `content[]` 六类 | 只吃 `text` +（i2v）**一张首帧图** | 见 `app/ark.py` 降维矩阵：last_frame / reference_image / video_url / audio_url / draft_task 一律 **400** |
 | D-9 | `DELETE` 取消 | **无取消端点** | 本服务不实现 DELETE（路由不存在；未终态也不会伪造 `cancelled`） |
 | D-10 | 创建响应 `{id}` + `cgt-` 前缀 | 上游给裸 UUID | **本地任务 id 由本服务生成**（`cgt-…`），上游 id 只存本层记录 |
 | D-11 | 查询无参数（凭证即身份） | **查询带路径参数** | 任务归属校验落在本层（`credential_id` 指纹；不符本地 404） |
-| D-12 | 回调 | 上游无 webhook | 本服务 v1 不实现回调（`callback_url` 进 `degradations`） |
+| D-12 | 回调 | 上游无 webhook | 本服务 v1 不实现回调（`callback_url` 记服务端日志） |
 | D-13 | `execution_expires_after` | 无 | 由本服务 `TASK_TIMEOUT` 兜 |
 | D-14 | `model` = provider/model | **上游没有"视频模型名"**：能力由 `chat_type` 决定 | 视频门：`model` 段只做 provider 校验（必须 `qwen`），**不转发**；chat 门：模型名**转发上游**（`messages[0].models` 与顶层 `model`），清单注册自 `GET /api/models` |
 
@@ -538,7 +538,7 @@ data: {"choices":[{"delta":{"role":"assistant","content":"","phase":"web_search"
 | U-15 | **文档/音频/视频解析（files 附件）** | ✅ **关闭（2026-09-24 晚）：上传链打通，三类全通** | 根因确证：**必须走上游 OSS 上传链**（外链 URL 任何形状都被拒）。上传链 = `getstsToken{"file_name","file_size","file_type"}` → 预签名 URL **不可用**（SignatureDoesNotMatch，7 种头组合全败）→ **改用 STS 凭证自签 OSS V1**（HMAC-SHA1，`x-oss-security-token` 头）PUT 成功。files 条目形状：文档 `type/file_class:"file"`、音频 `"audio"`、视频 `"video"`（§4.7）。经服务实测：PDF 答出标题（Attention Is All You Need）、音频听出蜂鸣声、视频描述出森林洞穴场景 |
 | U-16 | **OpenAI 风格客户端函数调用（`tools`/`tool_choice`）** | ✅ **关闭（2026-09-24）：不支持** | 三发对照（§4.6）：带 tools 被**静默忽略**（`get_weather` 零痕迹）；关内置搜索后模型自述"无法使用指定工具"（`function_call` 零出现）。**内置服务端工具**（`auto_search` 的 `web_search` 等）不受影响、照常闭环（SSE 有 `phase:"web_search"` + `function_call` 结构化事件，content 恒空）。chat 门对 `tools`/`tool_choice` 忽略 + 降级说明（行为与上游一致，文档登记证据） |
 | U-18 | **t2t 流式形态：thinking 只有状态信号、answer 真增量** | ✅ **关闭（2026-09-24 二次实测，phase 计数级）** | 上游 SSE `delta.phase` 两段式：**`thinking_summary`**（typing 4 + finished 1，**content 恒空 0 字符**——纯状态信号，思考文本不下发；⇒ `delta.reasoning_content` **无源可透传**，DeepSeek/Doubao 式思考流不存在）→ **`answer`**（typing 92 + finished 1，502 字——**真·增量流式**；此前"批量化"观察是短答案单 chunk 特例）。非流式 message 同样无 reasoning_content。门不编造 reasoning（不编造纪律）；TTFT ≈ thinking+首 token 时长（实测 15s，max 慢于 plus），与门无关 |
-| U-19 | **部分模型思考内容不分离（漏进正文 `content`）** | ✅ **关闭（2026-10-02）：模型侧行为，已在服务侧加固** | `qwen3.8-omni-flash` 在 **auto / thinking 档把思考过程直接写进正文 `content`**——无 `reasoning_content`、无 `</analysis>` 标记（复现 3/3，含流式：` We need answer user's request: …\n2`）；`reasoning_effort:"none"`（fast）干净。🔴 **对照 `qwen3.7-plus` 同请求流式正确分离 `reasoning_content`** ⇒ 非协议问题、非本服务翻译 bug，而是该模型不发 `thinking_summary` 事件（与 U-18 的"无源可透传"同源，只是它把思考写进了正文通道）。服务侧处置：可配置名单 `QWEN_THINKING_LEAK_MODELS`（默认含该模型）+ 缺省降 fast + 写 degradation；显式 `high` 照发但告警 |
+| U-19 | **部分模型思考内容不分离（漏进正文 `content`）** | ✅ **关闭（2026-10-02）：模型侧行为，已在服务侧加固** | `qwen3.8-omni-flash` 在 **auto / thinking 档把思考过程直接写进正文 `content`**——无 `reasoning_content`、无 `</analysis>` 标记（复现 3/3，含流式：` We need answer user's request: …\n2`）；`reasoning_effort:"none"`（fast）干净。🔴 **对照 `qwen3.7-plus` 同请求流式正确分离 `reasoning_content`** ⇒ 非协议问题、非本服务翻译 bug，而是该模型不发 `thinking_summary` 事件（与 U-18 的"无源可透传"同源，只是它把思考写进了正文通道）。服务侧处置：可配置名单 `QWEN_THINKING_LEAK_MODELS`（默认含该模型）+ 缺省降 fast + 写服务端日志（2026-10-14 起不下发）；显式 `high` 照发但记日志 |
 | U-17 | **t2t 最大上下文（实测边界）** | 🟡 **部分关闭（2026-09-24）** | 上游自报 `max_context_length=1,000,000` tokens，但经网页端接口实测：**≈5 万汉字（usage 39,668 prompt tokens）可靠工作**（首尾密钥双命中，无截断）；**≥6.2 万汉字触发 x5sec 风控**（秒拒、90s 冷却重试无效）。🔴 **换出口/轮换代理不可绕过**（两个全新 IP 同样秒拒 —— WAF 请求体大小规则，与 §2.4"与出口无关"结论一致）。比率实测 ≈1.3 字/token（usage 口径），上游每请求固定注入 ~1.4-2.8K tokens。实用建议：单次 prompt ≤5 万汉字；更长走分段或方舟回退通道（Doubao 256K 未实测） |
 
 ### 4.7 附件上传链（✅ 2026-09-24 晚实测，U-15 关闭）

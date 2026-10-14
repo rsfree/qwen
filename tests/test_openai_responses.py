@@ -65,11 +65,11 @@ def test_bad_input_raises():
 def test_response_object_shape():
     obj = openai_responses.response_object(
         response_id="resp_x", created=1, model="qwen3.7-plus", text="hi",
-        degradations=["d"], usage={"input_tokens": 3, "output_tokens": 2, "total_tokens": 5})
+        usage={"input_tokens": 3, "output_tokens": 2, "total_tokens": 5})
     assert obj["object"] == "response" and obj["status"] == "completed"
     assert obj["output"][0]["content"][0]["type"] == "output_text"
     assert obj["usage"] == {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}
-    assert obj["degradations"] == ["d"]
+    assert "degradations" not in obj, "降级说明不下发（2026-10-14 用户口径）"
     minimal = openai_responses.response_object(response_id="r", created=1, model="m", text="")
     assert "usage" not in minimal and "degradations" not in minimal
 
@@ -128,6 +128,7 @@ def test_responses_dry_run_zero_calls(client_app):
                    headers={**AUTH_A, "X-Avm-Dry-Run": "1"})
     assert resp.status_code == 200
     assert resp.json()["dry_run"] is True
+    assert "degradations" not in resp.json()
     assert fake.requests == []
 
 
@@ -143,7 +144,7 @@ def test_responses_tools_fall_back_to_ark(ark_app):
     data = resp.json()
     assert data["model"] == "qwen3.7-plus", "回退应答 model 改写为调用方请求值（脱敏）"
     assert data["output"][0]["content"][0]["text"] == "（方舟 responses 应答）"
-    assert any("回退" in d for d in data["degradations"])
+    assert "degradations" not in data, "降级说明不下发（只进服务端日志）"
     assert resp.headers.get("x-qwen-fallback") == "ark"
     assert "doubao-test" not in json.dumps(data), "🔴 应答全文不得出现回退模型名"
     ark_body = json.loads(fake_ark.requests[0].content)
@@ -187,7 +188,7 @@ def test_responses_tools_without_fallback_degrade(client_app):
                    json={**RESP_BODY, "tools": [{"type": "web_search"}]},
                    headers=AUTH_A)
     assert resp.status_code == 200
-    assert any("tools" in d for d in resp.json()["degradations"])
+    assert "degradations" not in resp.json()
 
 
 def test_responses_tool_state_without_fallback_is_actionable_400(client_app):

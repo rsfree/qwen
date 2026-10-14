@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import dataclasses
 import json
+import logging
 import time
 
 from app.main import create_app
@@ -180,11 +181,13 @@ def test_dry_run_returns_payload_with_zero_upstream_and_zero_records(client_app)
     assert payload["dry_run"] is True
     assert payload["upstream"]["headers"]["Cookie"] == "token=<redacted>"
     assert payload["upstream"]["body"]["messages"][0]["chat_type"] == "i2v"
+    assert "degradations" not in payload
     assert fake.requests == []
     assert store.count() == 0
 
 
-def test_ratio_outside_enum_recorded_as_degradation(client_app):
+def test_ratio_outside_enum_falls_back_to_1_1_but_notes_stay_server_side(client_app):
+    """ratio 枚举外 ⇒ 仍落 1:1；降级说明**不出现在响应里**（2026-10-14 用户口径）。"""
     tc, fake, store, settings = client_app
     body = {"model": "qwen/video", "content": [{"type": "text", "text": "x"}],
             "ratio": "adaptive"}
@@ -193,7 +196,22 @@ def test_ratio_outside_enum_recorded_as_degradation(client_app):
     assert sent["size"] == "1:1"
     view = tc.get(f"{TASKS_PATH}/{task_id}", headers=AUTH_A).json()
     assert view["ratio"] == "1:1"
-    assert any("1:1" in item for item in view["degradations"])
+    assert "degradations" not in view
+    assert any("1:1" in item for item in store.get(task_id).degradations), "服务端仍留痕"
+
+
+def test_video_degradations_are_logged_not_returned(client_app, caplog):
+    """🔴 降级说明的落点 = 服务端日志；dry-run 与查询响应都不带该键。"""
+    tc, fake, store, settings = client_app
+    caplog.set_level(logging.INFO)
+    resp = tc.post(TASKS_PATH, json={**T2V_BODY, "ratio": "adaptive"},
+                   headers={**AUTH_A, "X-Avm-Dry-Run": "1"})
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["dry_run"] is True
+    assert "degradations" not in payload
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "降级说明[video]" in logged and "1:1" in logged
 
 
 def test_two_images_rejected_with_400_and_zero_upstream(client_app):
@@ -213,7 +231,8 @@ def test_duration_eight_clamped_and_reported_without_leaking_upstream(client_app
     sent = fake.bodies("/api/v2/chat/completions")[0]
     assert "duration" not in sent      # 上游没有该参数，绝不透传
     view = tc.get(f"{TASKS_PATH}/{task_id}", headers=AUTH_A).json()
-    assert any("吸附" in item for item in view["degradations"])
+    assert "degradations" not in view
+    assert any("吸附" in item for item in store.get(task_id).degradations)
 
 
 def test_pool_exhausted_is_429_with_retry_after_and_zero_upstream(settings, fake_upstream):

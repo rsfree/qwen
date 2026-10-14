@@ -225,8 +225,9 @@ def test_view_failed_carries_error():
     assert view["error"] == {"code": "InternalServiceError", "message": "上游挂了"}
 
 
-def test_view_degradations_only_when_nonempty():
+def test_view_never_exposes_degradations():
+    """🔴 2026-10-14 用户口径：降级说明**不下发**（只进服务端日志）—— 记录里有也不出现。"""
     rec = make_rec()
     rec.set_degradations(["x"])
-    assert ark_task_view(rec)["degradations"] == ["x"]
+    assert "degradations" not in ark_task_view(rec)
     assert "degradations" not in ark_task_view(make_rec())

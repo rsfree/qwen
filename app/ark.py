@@ -17,15 +17,16 @@
   · `resolution` / `seed` / `watermark` / `camera_fixed` / `generate_audio` / `return_last_frame` /
     `frames` / `service_tier` / `draft` / `priority` / `safety_identifier` / `tools` /
     `omni_reference_task_type` / `output_format` / `callback_url` / `execution_expires_after`
-    → 认得但做不到 ⇒ 进 `degradations[]`（不假装支持、不静默丢弃）。
+    → 认得但做不到 ⇒ **只进服务端日志**（不假装支持、不静默丢弃；2026-10-14 起不再下发给调用方）。
 
 诚实边界（不许编）：
   · `usage` **不给** —— 上游没有 token 口径（视频额度是 3 次/天计数，不是 token）；
   · `resolution` **不回填** —— 上游不回传（编一个尺寸比留空更糟）；
   · `duration` 仅在 `succeeded` 时给 **5** —— 上游出片固定 ~5.042s（n≥5 次容器实测），
     这是"实际产出值"而非请求值；
-  · `degradations` 是**加性扩展**（沿用 `../jimeng` 的家族口径）—— 方舟原生没有这个键，
-    只在非空时出现；对"unknown field 会报错"的严格 SDK 客户端，接入文档给出关闭方式。
+  · 降级说明**不下发**（2026-10-14 用户口径）：本层照旧算出完整 `degradations[]`（供服务端
+    日志与排队记录留痕），但**任何对外报文都不再带该键** —— 响应与方舟原生逐字段一致，
+    "unknown field 报错"的严格 SDK 问题随之消失。
 """
 from __future__ import annotations
 
@@ -221,7 +222,7 @@ def ark_task_view(rec: TaskRecord) -> dict:
 
     只给**真知道**的值：`content` / `duration` 仅成功时出现；`resolution` / `usage` /
     `seed` 等一概不出现（不编常量、不拿 null 占位）。`error` 是唯一显式可空字段
-    （方舟规定成功时为 null）。
+    （方舟规定成功时为 null）。降级说明**不下发**（只进服务端日志，2026-10-14 口径）。
     """
     out: dict = {
         "id": rec.local_id,
@@ -238,8 +239,8 @@ def ark_task_view(rec: TaskRecord) -> dict:
         out["duration"] = UPSTREAM_FIXED_DURATION
     if rec.ratio:
         out["ratio"] = rec.ratio
-    if rec.degradations:
-        out["degradations"] = rec.degradations   # 加性扩展，仅非空时出现
+    # 降级说明（rec.degradations）**刻意不读** —— 它是服务端日志与排队记录的口袋，
+    # 不出现在任何对外响应里（2026-10-14 用户口径）。
     return out
 
 

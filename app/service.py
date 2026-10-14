@@ -29,6 +29,7 @@ from typing import Any
 
 from .ark import CreatePlan, ark_task_view, translate_ark_create
 from .config import Settings
+from .degradations import log_degradations
 from .errors import (
     AdapterError,
     AuthenticationError,
@@ -70,6 +71,8 @@ class QwenVideoService:
     def create(self, body: dict, credential_id: str, *, dry_run: bool = False) -> dict:
         """方舟创建请求 → `{"id": "cgt-…"}`（dry_run 时返回"将要发出的请求"）。"""
         plan = translate_ark_create(body)
+        # 降级说明**只进服务端日志**、不下发给调用方（2026-10-14 用户口径）
+        log_degradations("video", plan.degradations, model=plan.model_requested)
         if dry_run:
             return self._dry_run_view(plan)
 
@@ -106,7 +109,6 @@ class QwenVideoService:
                     "<chat_id>", prompt=plan.prompt, ratio=plan.ratio,
                     chat_type=plan.chat_type, image_url=plan.image_url),
             },
-            "degradations": plan.degradations,
         }
 
     @staticmethod
@@ -263,7 +265,6 @@ class QwenVideoService:
                     "<chat_id>", model=req.model, prompt=req.prompt,
                     files=req.files or None, gear=req.thinking_gear),
             },
-            "degradations": req.degradations,
         }
 
     def chat_stream(self, req: ChatRequest, meta: dict | None = None

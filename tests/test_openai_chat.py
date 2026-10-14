@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 
 import pytest
@@ -503,15 +504,27 @@ def test_thinking_gear_passes_to_upstream_body(ark_app):
     assert fc["thinking_mode"] == "Thinking" and fc["auto_thinking"] is False
 
 
-def test_chat_stream_first_chunk_carries_degradations(client_app):
+def test_chat_stream_never_carries_degradations(client_app):
+    """🔴 2026-10-14：降级说明只进服务端日志 —— 首片也不带（此前是加性扩展随首片下发）。"""
     test_client, _, _, _ = client_app
     body = {**CHAT_BODY, "stream": True, "temperature": 0.7}
     with test_client.stream("POST", CHAT_PATH, json=body, headers=AUTH_A) as resp:
         raw = "".join(resp.iter_text())
     events = [json.loads(line[len("data:"):]) for line in raw.splitlines()
               if line.startswith("data:") and line != "data: [DONE]"]
-    assert "temperature" in "；".join(events[0]["degradations"])
-    assert all("degradations" not in e for e in events[1:]), "加性扩展只随首片出现"
+    assert events, "流式事件不该为空"
+    assert all("degradations" not in e for e in events)
+
+
+def test_chat_degradations_are_logged_not_returned(client_app, caplog):
+    """同一份降级说明改从服务端日志出（拿不到日志就没有可观测性，所以这条要钉住）。"""
+    test_client, _, _, _ = client_app
+    caplog.set_level(logging.INFO)
+    resp = test_client.post(CHAT_PATH, json={**CHAT_BODY, "temperature": 0.7}, headers=AUTH_A)
+    assert resp.status_code == 200
+    assert "degradations" not in resp.json()
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "降级说明[chat]" in logged and "temperature" in logged
 
 
 # ---------------------------------------------------------------- /v1/models 注册
@@ -785,9 +798,7 @@ def test_fast_gear_has_no_heartbeat_for_leak_model(client_app):
               if line.startswith("data:") and line != "data: [DONE]"]
     texts = [e["choices"][0]["delta"].get("content", "") for e in events if e.get("choices")]
     assert " " not in texts[:1], "fast 档不该发心跳空格"
-    assert any(LEAK_MODEL in (e.get("degradations") or [""])[0] or
-               any(LEAK_MODEL in x for x in (e.get("degradations") or []))
-               for e in events), "降级说明须随流式首片下发"
+    assert all("degradations" not in e for e in events), "降级说明不再下发（只进服务端日志）"
     fc = fake.bodies("/api/v2/chat/completions")[0]["messages"][0]["feature_config"]
     assert fc["thinking_enabled"] is False and fc["thinking_mode"] == "Fast"
 

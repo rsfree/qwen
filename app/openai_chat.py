@@ -14,7 +14,8 @@
 
 语义决策（docs/INTERFACE.md §8 有登记）：
   · **无状态**：每个请求新建上游会话；多轮/system 请求**拍平**成单条 prompt（写降级说明）；
-  · **不编造**：`usage` 只透传上游真值；`degradations` 加性扩展（非空才出现）；
+  · **不编造**：`usage` 只透传上游真值；降级说明（`degradations[]`）只进服务端日志、
+    **不下发**（2026-10-14 用户口径）；
   · `model` 不做本地白名单硬校验（未知模型由上游拒绝），只拦明确的错误指向（`qwen/video`）。
 """
 from __future__ import annotations
@@ -29,7 +30,8 @@ from .errors import AdapterError, InvalidParameterError
 #: 本门唯一做的任务类型（上游 `chat_type` 三处同标）。
 CHAT_TASK = "t2t"
 
-#: 认得但上游 t2t 没有的 OpenAI 参数 —— 出现即进 `degradations`（不假装支持、不静默丢弃）。
+#: 认得但上游 t2t 没有的 OpenAI 参数 —— 出现即记一条降级说明（**只进服务端日志**，
+#: 不假装支持、不静默丢弃；2026-10-14 起不再下发给调用方）。
 #: 🔴 `reasoning_effort` **不在其中**：它是思考档位入口（`_thinking_gear`），见 THINKING_GEARS。
 UNSUPPORTED_PARAMS = (
     "temperature", "top_p", "n", "max_tokens", "max_completion_tokens", "max_output_tokens",
@@ -354,7 +356,7 @@ def openai_usage(raw: dict | None) -> dict | None:
 
 
 def completion_object(*, completion_id: str, created: int, model: str, text: str,
-                      degradations: list[str], usage: dict | None = None) -> dict:
+                      usage: dict | None = None) -> dict:
     """非流式响应（OpenAI `chat.completion`）。`usage` 仅在上游给出真值时出现。"""
     obj: dict = {
         "id": completion_id,
@@ -368,16 +370,13 @@ def completion_object(*, completion_id: str, created: int, model: str, text: str
     mapped = openai_usage(usage)
     if mapped:
         obj["usage"] = mapped
-    if degradations:
-        obj["degradations"] = list(degradations)   # 加性扩展（同方舟门 GET 口径）
     return obj
 
 
 def chunk_object(*, completion_id: str, created: int, model: str, delta: dict,
                  finish_reason: str | None = None,
-                 degradations: list[str] | None = None,
                  usage: dict | None = None) -> dict:
-    """流式分片（OpenAI `chat.completion.chunk`）。`degradations` 只随首片出现（非空时）。"""
+    """流式分片（OpenAI `chat.completion.chunk`）。"""
     obj: dict = {
         "id": completion_id,
         "object": "chat.completion.chunk",
@@ -388,8 +387,6 @@ def chunk_object(*, completion_id: str, created: int, model: str, delta: dict,
     mapped = openai_usage(usage)
     if mapped:
         obj["usage"] = mapped
-    if degradations:
-        obj["degradations"] = list(degradations)
     return obj
 
 

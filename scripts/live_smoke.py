@@ -114,7 +114,7 @@ def cmd_run(args) -> int:
                 return 1
             view = got.json()
             if view["status"] != last_status:
-                brief = {k: view.get(k) for k in ("error", "duration", "ratio", "degradations")}
+                brief = {k: view.get(k) for k in ("error", "duration", "ratio")}
                 print(f"[poll] {time.strftime('%H:%M:%S')} status={view['status']} "
                       f"{json.dumps(brief, ensure_ascii=False)}")
                 last_status = view["status"]
@@ -180,7 +180,7 @@ def cmd_chat(args) -> int:
                 print(resp.text[:600])
                 return 1
             data = resp.json()
-            print(json.dumps({k: data.get(k) for k in ("id", "object", "model", "degradations")},
+            print(json.dumps({k: data.get(k) for k in ("id", "object", "model")},
                              ensure_ascii=False))
             text = data["choices"][0]["message"]["content"]
     print(f"[chat] 回复 {len(text)} 字，耗时 {time.time() - started:.1f}s")

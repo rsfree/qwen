@@ -84,11 +84,11 @@ Authorization: Bearer <key>
 |---|---|---|---|
 | `model` | string | ✅ | `qwen/<任意名>` 或裸名；**provider 段必须为 `qwen`**，否则 400。模型名不转发上游（上游无视频模型维度，见 UPSTREAM §8 D-14） |
 | `content` | object[] | ✅ | 见 §2.2 |
-| `ratio` | string | ❌ | 枚举：`1:1` / `3:4` / `4:3` / `16:9` / `9:16`；**枚举外（含 `adaptive`、缺失、写错）一律落 `1:1` + 降级说明**（冻结口径 D-2） |
-| `duration` | integer | ❌ | 上游固定 ~5s：`5` 静默；`>5` 向下吸附 + 说明；`-1` 替换成 5 + 说明；**`<5` 直接 400** |
-| `callback_url` | string | ❌ | v1 未实现回调 ⇒ 进 `degradations`（请轮询查询接口） |
-| `resolution` / `seed` / `watermark` / `camera_fixed` / `generate_audio` / `return_last_frame` / `frames` / `service_tier` / `draft` / `priority` / `safety_identifier` / `tools` / `omni_reference_task_type` / `output_format` / `execution_expires_after` | — | ❌ | **认得但做不到** ⇒ 进 `degradations`（不假装支持、不静默丢弃；`seed: -1` 视为"没给"） |
-| `extra_body` | object | ❌ | 未建模字段口袋：**每个键**都会进 `degradations` |
+| `ratio` | string | ❌ | 枚举：`1:1` / `3:4` / `4:3` / `16:9` / `9:16`；**枚举外（含 `adaptive`、缺失、写错）一律落 `1:1`**（冻结口径 D-2；事实记服务端日志，§3.1） |
+| `duration` | integer | ❌ | 上游固定 ~5s：`5` 静默；`>5` 向下吸附（记服务端日志）；`-1` 替换成 5（同）；**`<5` 直接 400** |
+| `callback_url` | string | ❌ | v1 未实现回调 ⇒ 记服务端日志（请轮询查询接口） |
+| `resolution` / `seed` / `watermark` / `camera_fixed` / `generate_audio` / `return_last_frame` / `frames` / `service_tier` / `draft` / `priority` / `safety_identifier` / `tools` / `omni_reference_task_type` / `output_format` / `execution_expires_after` | — | ❌ | **认得但做不到** ⇒ 记服务端日志（不假装支持、不静默丢弃；`seed: -1` 视为"没给"） |
+| `extra_body` | object | ❌ | 未建模字段口袋：**每个键**都会记一条服务端日志 |
 
 ### 2.2 `content[]` 降维矩阵（方舟超集 → qwen 子集）
 
@@ -137,15 +137,15 @@ Authorization: Bearer <key>
 | `content.video_url` | 仅 `succeeded` | 调用方拿到即可下载（上游 CDN 签名直链，实测可直下） |
 | `duration` | 仅 `succeeded` | **5**（上游固定 ~5.042s，实测 n≥5；不是请求值） |
 | `ratio` | 有值时 | 实际生效比例（决定输出画幅） |
-| `degradations` | 仅非空时 | 🔴 **加性扩展**（原生没有这个键）：本层的降级/吸附/忽略说明清单 |
 
 🔴 **不编造**：`resolution` / `seed` / `usage` / `frames` / `framespersecond` / `draft` 等
 **一概不出现**（上游不回传/不支持，编一个"看起来合理"的常量比留空更糟）。
 `usage` 尤其：视频链路上游没有 token 口径，视频额度是"3 次/天"计数 —— 给 0 等于声称"消耗 0 token"。
 （⚠️ chat 链路**有**真实 usage，见 §8.3 —— 两扇门口径不同，别互相串。）
 
-> ⚠️ **严格 SDK 客户端注意**：官方 Java/Go SDK 对 unknown field 是**报错**。若你的客户端
-> 不接受 `degradations` 扩展，请在网关上做响应字段过滤（或告知本服务关闭该键 —— 待实现开关）。
+> 🔴 **降级说明不下发**（2026-10-14 用户口径）：本层仍会算出"比例吸附 / 参数忽略 / 能力不及"
+> 这类事实，但**只写服务端日志**（logger `qwen.degradations`），**响应里没有任何额外键** ——
+> 键集与方舟原生逐字段一致，严格 SDK 不会遇到 unknown field。排障请让运维查服务端日志。
 
 ### 3.2 状态语义
 
@@ -223,8 +223,7 @@ X-Avm-Dry-Run: 1
  "upstream": {"method": "POST",
               "url": "https://chat.qwen.ai/api/v2/chat/completions?chat_id=<chat_id>",
               "headers": {..., "Cookie": "token=<redacted>"},
-              "body": {...}},
- "degradations": ["…"]}
+              "body": {...}}}
 ```
 
 用途：部署前/改配置后**零成本**自检翻译与请求形状；也是排障第一手段。
@@ -293,7 +292,7 @@ Authorization: Bearer <key>        # 必须带（写端点）
 | `model` | ✅ | 上游模型裸名（`qwen3.7-plus`…）或 `qwen/` 前缀形态；**原样回显**在响应 `model` 里。不做本地白名单硬校验（注册清单有 TTL，硬校验会用过期清单拒绝合法新模型）——未知模型由上游拒绝。`qwen/video` ⇒ **400**（视频请走方舟门） |
 | `messages` | ✅ | `system` / `user` / `assistant`；`content` 收字符串或分段数组（`text` + `image_url`，见 §8.7）。**文件/音频/视频分段 ⇒ 400**（U-15 实证） |
 | `stream` | ❌ | `true` ⇒ 真流式（上游 SSE 增量 → `chat.completion.chunk`）；`false`/缺省 ⇒ 服务端聚合后一次性回 `chat.completion` |
-| `temperature` / `top_p` / `max_tokens` / `tools` / `tool_choice` / `response_format` / `seed` / `reasoning_effort` 等 | ❌ | **认得但上游没有** ⇒ 进 `degradations`（不假装支持、不静默丢弃）。⚠️ `tools`/`tool_choice`：上游**不支持 OpenAI 风格函数调用**（实测静默忽略——UPSTREAM §4.6 / U-16），带 tools 的请求**不会产生 `tool_calls`**；模型可能改用**内置工具**（如 `auto_search` 的 web_search）作答 |
+| `temperature` / `top_p` / `max_tokens` / `tools` / `tool_choice` / `response_format` / `seed` / `reasoning_effort` 等 | ❌ | **认得但上游没有** ⇒ 记服务端日志（不假装支持、不静默丢弃；响应里不出现）。⚠️ `tools`/`tool_choice`：上游**不支持 OpenAI 风格函数调用**（实测静默忽略——UPSTREAM §4.6 / U-16），带 tools 的请求**不会产生 `tool_calls`**；模型可能改用**内置工具**（如 `auto_search` 的 web_search）作答 |
 
 ### 8.2 多轮与 system（拍平口径）✅ 2026-09-24 三轮真实验证
 
@@ -328,9 +327,9 @@ Authorization: Bearer <key>        # 必须带（写端点）
   （实测复现 3/3，含流式；同请求 `qwen3.7-plus` 流式**正确分离** ⇒ 模型侧行为，非本服务翻译 bug）。
   本门处置：
   - **缺省（auto）命中名单 ⇒ 自动切 fast**（`thinking_enabled:false` ⇒ 无思考、正文干净），
-    并在 `degradations` 写明降级理由（**不静默改语义**：降档事实对调用方可见）；
+    并在**服务端日志**写明降级理由（降档事实对调用方不再显式可见，运营侧可查）；
   - 调用方**显式**声明 `reasoning_effort:"high"` ⇒ **照发不覆盖**（显式意图优先），
-    但同样写 `degradations` 告知"思考会并入正文、无 reasoning_content"；
+    服务端日志同样记下"思考会并入正文、无 reasoning_content"的风险；
   - 名单可换也可关：改 env 即可，不必发版；**未设 env ⇒ 加固默认生效**，显式设为空串 ⇒ 关闭加固。
 - 🔴 **思考心跳**：思考期上游静默，流式应答在正文前先发一个**空格增量**变相解锁"首字"
   （用户方案）——流式正文会带一个前导空格（非流式不带；fast 档无心跳）。拼正文请 `strip` 或跳过首空格。
@@ -350,8 +349,8 @@ Authorization: Bearer <key>        # 必须带（写端点）
 
 - `usage`：**上游真实回传**（`input/output/total_tokens`，2026-09-24 实测随 answer 事件递增）
   ⇒ 只做改名映射透传（取流中最后一份 = 终值）；上游没给 ⇒ 整键缺席，不编造。
-- `degradations`：**加性扩展**（非空才出现；流式时只随首片）。严格 SDK 若对 unknown field
-  报错，请在网关上做响应字段过滤。
+- 降级说明（温度等被忽略的参数、多轮拍平、思考泄漏降档）**只写服务端日志**，
+  **响应里不出现**（2026-10-14 用户口径；键集与 OpenAI 原生一致，严格 SDK 无 unknown field）。
 - 上游零输出 / SSE 形态不认识 / **流内 error 事件** ⇒ **502 响亮失败**（含上游错误原文），
   绝不静默回空内容。
 
@@ -427,7 +426,7 @@ Authorization: Bearer <key>        # 必须带（写端点）
  "usage": {"input_tokens": 2421, "output_tokens": 12, "total_tokens": 2433}}
 ```
 
-- `usage`：上游真值透传（Responses 键名与上游一致）；`degradations` 加性扩展（非空才出现）。
+- `usage`：上游真值透传（Responses 键名与上游一致）；降级说明只写服务端日志、响应里不出现。
 - 回退应答 `model` 改写为调用方请求的模型（🔴 **回退模型名不外泄**，见 §10.2）；
   回退事实经 `x-qwen-fallback: ark` 头披露。
 
@@ -467,8 +466,8 @@ Authorization: Bearer <key>        # 必须带（写端点）
   · **报错报文清洗**：上游错误原文里即使含模型名，调用方看到的也是 `<redacted-model>`；
   · dry-run 预演同样打码；
   · 完整原文**只进服务端日志**（排障用，不出站）。
-- **回退事实仍披露**：`degradations` 回退说明（不含模型名）+ `x-qwen-fallback: ark` 响应头
-  ——说走了通道，不泄哪个模型。
+- **回退事实披露**：只靠 `x-qwen-fallback: ark` 响应头 —— 说走了通道，不泄哪个模型；
+  回退理由写服务端日志（2026-10-14 起不再写 `degradations`）。
 - **dry-run**：`X-Avm-Dry-Run: 1` ⇒ 返回 `{"channel":"ark-fallback", "reason":…, "upstream":…}`
   （Authorization 与 model 均打码，零调用）。
 - 🔴 **回退通道故障 ⇒ 502 响亮失败，不静默降回 qwen** —— 调用方点名的能力 qwen 给不了，

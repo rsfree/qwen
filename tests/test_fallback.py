@@ -5,7 +5,7 @@
   · 其余降级（temperature 等）不触发；qwen 正常路径完全不受影响；
   · 🔴 **回退模型名对调用方全链路脱敏**：应答 `model` 改写为调用方请求值、
     流式 chunk 逐条清洗、报错报文清洗（含模型名的上游错误只出 `<redacted-model>`）、
-    dry-run 打码；回退事实仍由 degradations + `x-qwen-fallback: ark` 头披露；
+    dry-run 打码；回退事实只由 `x-qwen-fallback: ark` 头披露（2026-10-14 起不下发 degradations）；
   · 通道故障 ⇒ 502 响亮失败，不静默降回 qwen。
 """
 from __future__ import annotations
@@ -30,8 +30,7 @@ def test_tools_request_falls_back(ark_app):
     data = resp.json()
     assert data["model"] == "qwen3.7-plus", "回退应答 model 改写为调用方请求值（脱敏）"
     assert data["choices"][0]["message"]["content"] == "（方舟应答）"
-    assert any("回退" in d for d in data["degradations"])
-    assert all("doubao" not in d for d in data["degradations"]), "degradations 不得含回退模型名"
+    assert "degradations" not in data, "降级说明不再下发（只进服务端日志）"
     assert resp.headers.get("x-qwen-fallback") == "ark"
     assert "doubao-test" not in json.dumps(data), "🔴 应答全文不得出现回退模型名"
     # 方舟收到：model 已替换、tools 原样保留、鉴权头正确
@@ -94,7 +93,7 @@ def test_unsupported_sampling_params_do_not_fall_back(ark_app):
                    headers=AUTH_A)
     assert resp.status_code == 200
     assert fake_ark.requests == [], "采样参数降级不触发回退"
-    assert any("temperature" in d for d in resp.json()["degradations"])
+    assert "degradations" not in resp.json(), "降级说明不再下发（只进服务端日志）"
 
 
 def test_fallback_stream_passthrough_scrubbed(ark_app):
@@ -198,7 +197,7 @@ def test_fallback_disabled_keeps_old_behavior(client_app):
     assert resp.status_code == 200
     data = resp.json()
     assert "x-qwen-fallback" not in resp.headers
-    assert any("tools" in d for d in data["degradations"])
+    assert "degradations" not in data, "降级说明不再下发（只进服务端日志）"
     resp = tc.post(CHAT_PATH, json=FILE_BODY, headers=AUTH_A)
     assert resp.status_code == 400
     assert "QWEN_UPLOAD_ENABLED" in resp.json()["error"]["message"]

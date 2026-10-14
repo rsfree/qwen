@@ -14,7 +14,7 @@ Responses 独有的形态：
   · 流式事件：`response.created` → `response.output_text.delta`（正文增量）→ `response.completed`。
 
 不编造：`usage` 只透传上游真值（Responses 的键名 input/output/total_tokens 与上游一致，
-直接改名映射同 chat 门）；`degradations` 加性扩展（非空才出现）。
+直接改名映射同 chat 门）；降级说明只进服务端日志、**不下发**（2026-10-14 用户口径）。
 """
 from __future__ import annotations
 
@@ -118,7 +118,6 @@ def _usage(raw: dict | None) -> dict | None:
 
 
 def response_object(*, response_id: str, created: int, model: str, text: str,
-                    degradations: list[str] | None = None,
                     usage: dict | None = None, status: str = "completed",
                     output: list | None = None) -> dict:
     """Responses 对象（`object: "response"`）。`output` 缺省 = 单条 assistant message。"""
@@ -141,8 +140,6 @@ def response_object(*, response_id: str, created: int, model: str, text: str,
     mapped = _usage(usage)
     if mapped:
         obj["usage"] = mapped
-    if degradations:
-        obj["degradations"] = list(degradations)
     return obj
 
 

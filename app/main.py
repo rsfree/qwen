@@ -35,6 +35,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Str
 from . import __version__, ark_fallback, llms_txt, models, openai_chat, openai_responses
 from .config import Settings
 from .coordinator import Coordinator
+from .degradations import log_degradations
 from .errors import (
     AdapterError,
     AuthenticationError,
@@ -246,8 +247,7 @@ def create_app(settings: Settings | None = None, *, store: TaskStore | None = No
                 yield _sse_dump(openai_chat.chunk_object(
                     completion_id=completion_id, created=created,
                     model=req.model_requested,
-                    delta={"role": "assistant", "content": ""},
-                    degradations=req.degradations))
+                    delta={"role": "assistant", "content": ""}))
                 if req.thinking_gear != "fast":
                     # 🔴 思考心跳（用户方案「输出空格变相加速」）：上游 thinking 阶段
                     # 不产出任何可见文本（U-18），客户端会干等 ~6-15s+；先发一个空格
@@ -332,6 +332,7 @@ def create_app(settings: Settings | None = None, *, store: TaskStore | None = No
         回退应答带 `x-qwen-fallback: ark` 响应头（流式/非流式都带）；
         通道故障 ⇒ AdapterError ⇒ OpenAI 词汇错误体（**不静默降回 qwen**）。
         """
+        logger.info("能力回退 → 方舟 chat：qwen 上游不支持%s", reason)
         if dry_run:
             return JSONResponse(status_code=200, content=_ark_dry_run_view(body, reason))
         if body.get("stream"):
@@ -354,7 +355,7 @@ def create_app(settings: Settings | None = None, *, store: TaskStore | None = No
                                      headers={"Cache-Control": "no-cache",
                                               "X-Accel-Buffering": "no",
                                               "x-qwen-fallback": "ark"})
-        data = await asyncio.to_thread(ark_fallback.chat, settings, body, reason,
+        data = await asyncio.to_thread(ark_fallback.chat, settings, body,
                                        transport=ark_transport)
         resp = JSONResponse(status_code=200, content=data)
         resp.headers["x-qwen-fallback"] = "ark"
@@ -370,7 +371,7 @@ def create_app(settings: Settings | None = None, *, store: TaskStore | None = No
           `stream: false` ⇒ 服务端聚合后一次性回 `chat.completion`；
         · 图片输入 = `image_url` 分段（单张，上游实测）；文件/音频/视频分段 ⇒
           **配置了回退通道则整单转方舟，否则 400**（U-15 实证）；
-        · `usage` 只在上游给出真值时透传；`degradations` 非空时作为加性扩展出现。
+        · `usage` 只在上游给出真值时透传；降级说明只进服务端日志（**不下发**）。
         """
         request_id = getattr(request.state, "request_id", "")
         try:
@@ -395,6 +396,8 @@ def create_app(settings: Settings | None = None, *, store: TaskStore | None = No
                         param="messages")
             req = openai_chat.parse_openai_chat_request(
                 body, thinking_leak_models=settings.thinking_leak_models)
+            log_degradations("chat", req.degradations, model=req.model_requested,
+                             request_id=request_id)
 
             if req.attachment and not settings.upload_enabled:
                 # 附件上传链未启用：有回退通道则转方舟（历史兼容），否则 400 指明配置项
@@ -421,7 +424,7 @@ def create_app(settings: Settings | None = None, *, store: TaskStore | None = No
             text = await asyncio.to_thread(run)
             return JSONResponse(status_code=200, content=openai_chat.completion_object(
                 completion_id=completion_id, created=created, model=req.model_requested,
-                text=text, degradations=req.degradations, usage=meta.get("usage")))
+                text=text, usage=meta.get("usage")))
         except AdapterError as exc:
             headers = ({"Retry-After": str(int(max(1.0, exc.retry_after)))}
                        if exc.retry_after else {})
@@ -451,6 +454,7 @@ def create_app(settings: Settings | None = None, *, store: TaskStore | None = No
             if settings.ark_fallback_enabled:
                 reason = ark_fallback.responses_fallback_reason(body)
                 if reason:
+                    logger.info("能力回退 → 方舟 responses：qwen 上游不支持%s", reason)
                     if dry_run:
                         return JSONResponse(status_code=200, content=_ark_dry_run_view(
                             body, reason, path="/responses"))
@@ -476,7 +480,7 @@ def create_app(settings: Settings | None = None, *, store: TaskStore | None = No
                                                           "X-Accel-Buffering": "no",
                                                           "x-qwen-fallback": "ark"})
                     data = await asyncio.to_thread(ark_fallback.responses, settings, body,
-                                                   reason, transport=ark_transport)
+                                                   transport=ark_transport)
                     resp = JSONResponse(status_code=200, content=data)
                     resp.headers["x-qwen-fallback"] = "ark"
                     return resp
@@ -488,25 +492,25 @@ def create_app(settings: Settings | None = None, *, store: TaskStore | None = No
                     param="input")
             req = openai_chat.parse_openai_chat_request(
                 chat_body, thinking_leak_models=settings.thinking_leak_models)
+            log_degradations("responses", req.degradations, model=req.model_requested,
+                             request_id=request_id)
 
             meta: dict = {}
             completion_id = openai_responses.new_response_id()
             created = int(time.time())
-            degradations = req.degradations
 
             if dry_run:
                 return JSONResponse(status_code=200, content={
                     "dry_run": True,
                     "channel": "qwen",
                     "upstream": (await asyncio.to_thread(service.chat_dry_run, req))["upstream"],
-                    "degradations": degradations,
                 })
 
             def _response(text: str) -> dict:
                 return openai_responses.response_object(
                     response_id=completion_id, created=created,
                     model=req.model_requested, text=text,
-                    degradations=degradations, usage=meta.get("usage"))
+                    usage=meta.get("usage"))
 
             if req.stream:
                 gen = service.chat_stream(req, meta=meta)
@@ -522,7 +526,7 @@ def create_app(settings: Settings | None = None, *, store: TaskStore | None = No
                             openai_responses.response_object(
                                 response_id=completion_id, created=created,
                                 model=req.model_requested, text="",
-                                degradations=degradations, status="in_progress",
+                                status="in_progress",
                                 output=[{"type": "message", "id": item_id,
                                          "role": "assistant", "status": "in_progress",
                                          "content": []}])))

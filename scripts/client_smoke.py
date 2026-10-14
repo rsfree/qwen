@@ -91,8 +91,6 @@ def step_dryrun(opener, base, key, payload, timeout) -> bool:
     hdr = up.get("headers", {})
     ok_shape = hdr.get("version") == "0.2.0" and "token=" in str(hdr.get("Cookie", ""))
     log(f"   ✅ 翻译形状：{up.get('method')} {up.get('url')} · version 头/Cookie {'✅' if ok_shape else '⚠️ 异常'}")
-    if data.get("degradations"):
-        log(f"   ℹ️ degradations: {data['degradations']}")
     return True
 
 
